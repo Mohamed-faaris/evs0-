@@ -5,6 +5,7 @@
  */
 
 #include <Arduino.h>
+#include "emqx_ca.h"
 #include <WiFi.h>
 #include <WebServer.h>
 #include <Preferences.h>
@@ -287,13 +288,13 @@ void loadMQTTConfig() {
 }
 
 void printMQTTStatus() {
-  Serial.println("\\n--- MQTT configuration ---");
-  Serial.printf("Enabled  : %s\\n", mqttConfig.enabled ? "YES" : "NO");
-  Serial.printf("Host     : %s\\n", mqttConfig.host.isEmpty() ? "(not set)" : mqttConfig.host.c_str());
-  Serial.printf("Port     : %u\\n", mqttConfig.port);
-  Serial.printf("Protocol : %s\\n", mqttConfig.protocol.c_str());
-  Serial.printf("Username : %s\\n", mqttConfig.username.isEmpty() ? "(not set)" : "configured");
-  Serial.printf("Password : %s\\n", mqttConfig.password.isEmpty() ? "not set" : "configured");
+  Serial.println("\n--- MQTT configuration ---");
+  Serial.printf("Enabled  : %s\n", mqttConfig.enabled ? "YES" : "NO");
+  Serial.printf("Host     : %s\n", mqttConfig.host.isEmpty() ? "(not set)" : mqttConfig.host.c_str());
+  Serial.printf("Port     : %u\n", mqttConfig.port);
+  Serial.printf("Protocol : %s\n", mqttConfig.protocol.c_str());
+  Serial.printf("Username : %s\n", mqttConfig.username.isEmpty() ? "(not set)" : "configured");
+  Serial.printf("Password : %s\n", mqttConfig.password.isEmpty() ? "not set" : "configured");
   Serial.println("Connection/publishing: not implemented in this firmware build.");
 }
 
