@@ -14,6 +14,45 @@ This document defines the MQTT topic names and JSON payload structures for the E
 
 The current test deployment uses TLS TCP port `8883`. EMQX Serverless supports MQTT over TLS on port 8883; WebSocket TLS on 8084 is not implemented in this firmware. Credentials are provisioned to ESP32 NVS and must not be committed to this repository.
 
+## Mock power-meter simulator
+
+The Node.js mock server publishes the simulated power meter as a second device identity, by default `power-meter-001`. It uses the same `MQTT_TOPIC_ROOT` but a separate MQTT client ID and Last Will. Set `POWER_METER_DEVICE_ID`, `MQTT_POWER_METER_CLIENT_ID`, and `MQTT_POWER_METER_PUBLISH_INTERVAL_MS` in the repository-root `.env` to override these defaults.
+
+Topics:
+
+- `evs/v1/devices/power-meter-001/telemetry`
+- `evs/v1/devices/power-meter-001/state`
+- `evs/v1/devices/power-meter-001/availability`
+
+Example telemetry:
+
+```json
+{
+  "schema_version": 1,
+  "device_id": "power-meter-001",
+  "device_type": "power_meter",
+  "meter_model": "single_phase_ac_mock",
+  "timestamp": "2026-11-02T00:00:00.000Z",
+  "uptime_seconds": 120,
+  "sequence": 24,
+  "readings": {
+    "voltage_v": 230.4,
+    "current_a": 1.52,
+    "active_power_w": 321.0,
+    "apparent_power_va": 350.2,
+    "reactive_power_var": 140.0,
+    "power_factor": 0.916,
+    "frequency_hz": 50.01,
+    "energy_kwh": 17.635
+  },
+  "valid": true
+}
+```
+
+All power-meter values are synthetic and are intended only for MQTT/dashboard development. The mock server integrates active power over process uptime to create an increasing demo energy counter. They must not be treated as real meter readings.
+
+The broker ACL for the shared MQTT username must allow the additional `power-meter-001` telemetry, state, and availability topics. The dashboard API subscribes to `{topic_root}/+/telemetry`, `{topic_root}/+/state`, and `{topic_root}/+/availability` and exposes the latest/history data at `/api/power-meter/latest` and `/api/power-meter/history`.
+
 ## Topic layout
 
 Replace `{device_id}` with the unique device identifier, for example `device-001`.
