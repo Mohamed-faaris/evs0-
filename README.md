@@ -95,7 +95,13 @@ pnpm device:provision:mqtt
 pnpm device:provision:mqtt -- --port /dev/ttyUSB0
 ```
 
-The script sends the configuration to the connected ESP32 at 115200 baud. The firmware CLI also supports `mqtt status` and `mqtt diagnose`. The diagnostic checks Wi-Fi state, required NVS fields, embedded CA presence, DNS resolution, and TCP reachability of the configured broker port. A successful TCP check does not prove TLS certificate validation or MQTT authentication. The CLI also supports `mqtt set-server`, `mqtt set-protocol`, `mqtt set-auth`, `mqtt clear-auth`, `mqtt enable`, and `mqtt disable`.
+The script sends the configuration to the connected ESP32 at 115200 baud. Firmware v1.1.0 supports verified MQTT-over-TLS connections using the saved broker credentials, automatic reconnect, retained state/availability messages, a retained Last Will, and MQ-135 telemetry publishing every 5 seconds. Serial commands include `mqtt status`, `mqtt diagnose`, and `mqtt reconnect`, plus `mqtt set-server`, `mqtt set-protocol`, `mqtt set-auth`, `mqtt clear-auth`, `mqtt enable`, and `mqtt disable`.
+
+### Arduino IDE firmware dependency
+
+In Arduino IDE, open **Sketch → Include Library → Manage Libraries** and install **MQTT** by Joel Gaehwiler (256dpi), version **2.5.3**. The sketch also uses ArduinoJson, which must be installed through Library Manager. ESP32's `WiFiClientSecure` and `time.h` are supplied by the ESP32 board package.
+
+The firmware synchronizes UTC time using NTP before opening TLS, then verifies the broker certificate against the CA in `emqx_ca.h`. Do not replace certificate verification with `setInsecure()`.
 
 ## Firmware version and build timestamp
 
@@ -134,7 +140,7 @@ The generated header defines `EMQX_ROOT_CA` in flash (`PROGMEM`) and is included
 
 **Security:** It is safe to commit this CA certificate and generated header. Never commit `.env`, MQTT passwords, Wi-Fi passwords, client private keys, or other credentials. The CA certificate is not a credential and does not replace MQTT username/password authentication.
 
-**Firmware status:** This change embeds the trust anchor for a future TLS MQTT client. The current ESP32 firmware still only stores MQTT settings in NVS; it does not yet establish the MQTT connection, validate a live broker certificate, publish telemetry, or reconnect. Do not interpret the presence of the CA header as a working MQTT transport.
+**Firmware status:** Firmware v1.1.0 includes the MQTT client implementation. It synchronizes time over NTP, validates the broker certificate using the embedded CA, authenticates with credentials stored in NVS, publishes telemetry/state/availability, and retries after connection loss. A successful build and live broker connection still need to be confirmed on the physical ESP32.
 
 ## MQTT protocol
 
