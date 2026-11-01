@@ -1,0 +1,10 @@
+{
+  "name": "cuspnode",
+  "version": "1.0.0",
+  "private": true,
+  "packageManager": "pnpm@10",
+  "scripts": {
+    "dev": "pnpm --filter cuspnode-mock-server dev",
+    "start": "pnpm --filter cuspnode-mock-server start"
+  }
+}
