@@ -251,7 +251,7 @@ app.all("/api/power-map/*", async (c) => {
         "User-Agent": "EVS0-PowerMap-Proxy/1.0"
       },
       redirect: "follow",
-      signal: AbortSignal.timeout(20000)
+      signal: AbortSignal.timeout(45000)
     });
 
     const headers = new Headers();
@@ -262,9 +262,10 @@ app.all("/api/power-map/*", async (c) => {
     headers.set("X-Content-Type-Options", "nosniff");
     headers.set("X-Power-Map-Proxy", "reclaimchennai/power-map-india");
 
+    // Stream large GeoJSON and map assets instead of buffering whole files in API memory.
     const body = c.req.method === "HEAD" || upstream.status === 204 || upstream.status === 304
       ? null
-      : await upstream.arrayBuffer();
+      : upstream.body;
     return new Response(body, { status: upstream.status, headers });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Upstream request failed";
