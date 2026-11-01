@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Activity, BrainCircuit, Wind, Radio, Gauge, RefreshCw, Wifi, WifiOff, Zap } from "lucide-react";
+import { Activity, BrainCircuit, Wind, Radio, Gauge, RefreshCw, Wifi, WifiOff, Zap, Map } from "lucide-react";
 import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 
 type Readings = {
@@ -40,7 +40,7 @@ const POWER_METER_DEVICE_ID = import.meta.env.VITE_POWER_METER_DEVICE_ID || "pow
 const fmt = (n?: number, digits = 2) => n == null || !Number.isFinite(n) ? "—" : n.toFixed(digits);
 
 export default function App() {
-  const [tab, setTab] = useState<"live" | "predictions">("live");
+  const [tab, setTab] = useState<"live" | "power-map" | "predictions">("live");
   const [reading, setReading] = useState<Reading | null>(null);
   const [history, setHistory] = useState<Reading[]>([]);
   const [powerMeterReading, setPowerMeterReading] = useState<Reading | null>(null);
@@ -114,6 +114,7 @@ export default function App() {
 
     <nav className="tabs">
       <button className={tab === "live" ? "active" : ""} onClick={() => setTab("live")}><Activity size={16}/> Live Monitoring</button>
+      <button className={tab === "power-map" ? "active" : ""} onClick={() => setTab("power-map")}><Map size={16}/> Power Map</button>
       <button className={tab === "predictions" ? "active" : ""} onClick={() => setTab("predictions")}><BrainCircuit size={16}/> AI Predictions</button>
     </nav>
 
@@ -194,6 +195,16 @@ export default function App() {
       </section>
 
       <div className="sourcefoot">MQ-135 SOURCE: MQTT · {reading?.device_id || "NO SENSOR DEVICE"} · {reading ? "RECEIVED " + new Date(reading.received_at).toLocaleString() : "NO READINGS RECEIVED"}<br/>POWER SOURCE: MQTT · {powerMeterReading?.device_id || POWER_METER_DEVICE_ID} · {powerMeterReading ? "RECEIVED " + new Date(powerMeterReading.received_at).toLocaleString() : "NO METER READINGS RECEIVED"}</div>
+    </section> : tab === "power-map" ? <section className="content power-map-content">
+      <div className="sectionhead">
+        <div><div className="eyebrow">INDIA ELECTRICITY INFRASTRUCTURE</div><h2>Power Map of India</h2></div>
+        <a className="power-map-open" href={API + "/api/power-map/open"} target="_blank" rel="noreferrer noopener">Open full map <Map size={14}/></a>
+      </div>
+      <div className="power-map-attribution">
+        <span>POWER MAP OF INDIA · RECLAIM CHENNAI</span>
+        <span>Live map and published data are served through the EVS0 same-origin proxy.</span>
+      </div>
+      <iframe className="power-map-frame" src={API + "/api/power-map/"} title="Power Map of India by Reclaim Chennai" loading="lazy" referrerPolicy="strict-origin-when-cross-origin" sandbox="allow-scripts allow-forms allow-popups" />
     </section> : <section className="content">
       <div className="sectionhead"><div><div className="eyebrow">FORECAST ENGINE</div><h2>AI predictions</h2></div><span className="status muted"><i/> MODEL NOT CONFIGURED</span></div>
       <article className="prediction"><div className="predictionicon"><BrainCircuit size={26}/></div><div><h3>Forecasting is not available yet</h3><p>The dashboard will show 1-hour, 6-hour, and 24-hour forecasts after sufficient historical pollutant data has been collected and a model has been trained and validated.</p><div className="requirements"><span>01 / HISTORICAL DATA</span><span>02 / CALIBRATED PM SENSORS</span><span>03 / VALIDATED MODEL</span></div></div></article>

@@ -1,0 +1,68 @@
+# Power Map of India integration
+
+EVS0 includes the public Power Map of India by [Reclaim Chennai](https://github.com/reclaimchennai/power-map-india) as the **Power Map** dashboard tab.
+
+## Integration shape
+
+The integration deliberately reuses the upstream map frontend and published data rather than reimplementing the map renderer or copying its datasets:
+
+```text
+Browser
+  └── EVS0 React tab
+       └── iframe: /api/power-map/
+            └── Hono read-only proxy
+                 └── https://power.reclaimchennai.city/
+                      ├── index.html, JS, CSS, icons
+                      ├── data/*.json and data/grid/*.geojson
+                      └── other published map resources
+```
+
+The upstream frontend requests its own assets and data using relative paths (for example, `data/plants.json`, `data/live/now.json`, and `data/grid/index.json`). Serving the page under `/api/power-map/` makes those URLs resolve against the configured API host, so the browser does not contact the Reclaim Chennai host directly. Because the iframe is sandboxed to an opaque origin, these resource reads are cross-origin from the iframe's perspective; the proxy returns permissive CORS headers for its public, unauthenticated GET/HEAD resources.
+
+The upstream repository also contains a FastAPI service with routes under `/api/` and `/geo/`. The proxy forwards matching paths when they are available in the configured deployment, e.g. `/api/power-map/api/coal/latest` maps to upstream `/api/coal/latest`. The public map's main renderer primarily consumes the published static JSON/GeoJSON files.
+
+## Configuration
+
+In the repository-root `.env`:
+
+```dotenv
+POWER_MAP_UPSTREAM=https://power.reclaimchennai.city
+```
+
+The same default is used when the variable is omitted. The proxy requires HTTPS and uses a fixed server-side destination; clients cannot pass an arbitrary target host.
+
+## Proxy behaviour
+
+- Map resources are read-only: `GET` and `HEAD` are proxied; `OPTIONS` is answered locally for sandboxed cross-origin asset requests; other methods return 405.
+- The Hono server forwards the request path and query string and streams large assets (especially GeoJSON) without buffering the full response in API memory.
+- It forwards `If-None-Match` and `If-Modified-Since` validators, plus range headers, and preserves content type, cache-control, ETag, last-modified, expiry, and range response metadata.
+- Same-origin HTTPS redirects may be followed up to three hops. Redirects to any other origin or protocol are blocked to prevent the fixed-host proxy from being used to reach internal or unrelated services.
+- An invalid `POWER_MAP_UPSTREAM` disables only this proxy and returns HTTP 503; it does not prevent the telemetry API from starting. Upstream 5xx/network failures return HTTP 502 with a small JSON error.
+- The embedded iframe uses a sandboxed opaque origin (`allow-scripts allow-forms allow-popups`) so upstream scripts cannot access the EVS0 document, origin storage, or same-origin APIs. Proxy responses allow anonymous cross-origin reads for the iframe's relative scripts and data. The **Open full map** link goes through `/api/power-map/open`, which redirects the browser to the configured upstream domain so the full page does not execute on the EVS0/API origin. Both links use `VITE_API_BASE` when configured. The Vite development server already proxies `/api/*` to the Hono API on port 3002.
+
+The upstream map loads some third-party resources directly: MapLibre/three.js from CDNs, vector tiles and glyphs, weather data, fonts, and satellite/terrain tiles. Those providers must continue to support browser CORS. EVS0's proxy removes the cross-origin dependency on the Reclaim Chennai origin; it does not proxy every unrelated third-party provider.
+
+## Run locally
+
+```bash
+cp .env.example .env  # only if .env does not already exist
+# Keep your existing MQTT values in .env; add POWER_MAP_UPSTREAM if needed.
+pnpm install
+pnpm dev
+```
+
+Open the EVS0 dashboard at `http://localhost:5173` and select **Power Map**. The Hono API must be running; `pnpm dev` starts it with the dashboard.
+
+To inspect the proxy independently:
+
+```bash
+curl -I http://localhost:3002/api/power-map/
+curl -I http://localhost:3002/api/power-map/data/plants.json
+```
+
+## Attribution and data notes
+
+- Map interface and data pipeline: [Power Map of India — Reclaim Chennai](https://github.com/reclaimchennai/power-map-india), [live map](https://power.reclaimchennai.city/).
+- The upstream project describes its code as MIT. Its datasets have their own source-specific terms; see its [data licences](https://github.com/reclaimchennai/power-map-india/blob/main/data/LICENSES.md) and the **Sources** section inside the embedded map.
+- Do not treat every value as instantaneous. The upstream guide states that station-level generation is generally shown as yesterday's average; Tamil Nadu's state-level SLDC figures are more current. Each dataset has its own freshness interval and limitations.
+- EVS0 does not claim ownership of the upstream map or source data. The original map retains its own attribution and source links inside the iframe.

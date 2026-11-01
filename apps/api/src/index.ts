@@ -221,6 +221,173 @@ app.get("/api/aqi/predictions", (c) => c.json({
 }));
 app.get("/", (c) => c.json({ name: "EVS0 Dashboard API", docs: ["/api/health", "/api/devices", "/api/readings/latest", "/api/readings/history", "/api/power-meter/latest", "/api/power-meter/history", "/api/aqi/current", "/api/aqi/predictions"] }));
 
+const POWER_MAP_UPSTREAM_VALUE = (process.env.POWER_MAP_UPSTREAM || "https://power.reclaimchennai.city").trim();
+let POWER_MAP_UPSTREAM: URL | null = null;
+try {
+  const configuredUrl = new URL(POWER_MAP_UPSTREAM_VALUE);
+  if (
+    configuredUrl.protocol !== "https:" ||
+    configuredUrl.username ||
+    configuredUrl.password ||
+    configuredUrl.pathname !== "/" ||
+    configuredUrl.search ||
+    configuredUrl.hash
+  ) {
+    throw new Error("POWER_MAP_UPSTREAM must be an HTTPS origin without credentials, path, query, or fragment.");
+  }
+  POWER_MAP_UPSTREAM = new URL(configuredUrl.origin);
+} catch (error) {
+  const message = error instanceof Error ? error.message : "Invalid URL";
+  console.error("[POWER-MAP] Proxy disabled by invalid POWER_MAP_UPSTREAM:", message);
+}
+
+// Read-only reverse proxy for the public Power Map site. The iframe and its relative
+// JS/CSS/JSON/GeoJSON requests stay on the EVS0 origin. The iframe is sandboxed with
+// an opaque origin, so the proxy explicitly allows anonymous cross-origin reads.
+// External tile/CDN providers used by the map remain direct browser requests.
+app.get("/api/power-map/open", (c) => {
+  const configuredUpstream = POWER_MAP_UPSTREAM;
+  if (!configuredUpstream) {
+    return c.json({
+      error: "power_map_proxy_misconfigured",
+      message: "Power Map proxy configuration is invalid. Check POWER_MAP_UPSTREAM."
+    }, 503);
+  }
+  // Open the upstream on its own origin rather than rendering it as a top-level
+  // document on the EVS0/API origin.
+  return c.redirect(configuredUpstream.origin + "/", 302);
+});
+app.get("/api/power-map", (c) => c.redirect("/api/power-map/"));
+app.options("/api/power-map/*", (c) => new Response(null, {
+  status: 204,
+  headers: {
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Methods": "GET, HEAD, OPTIONS",
+    "Access-Control-Allow-Headers": "If-None-Match, If-Modified-Since, Range, If-Range",
+    "Access-Control-Max-Age": "86400"
+  }
+}));
+app.all("/api/power-map/*", async (c) => {
+  if (c.req.method !== "GET" && c.req.method !== "HEAD") {
+    return c.text("Power Map proxy is read-only.", 405, { Allow: "GET, HEAD, OPTIONS" });
+  }
+  if (!POWER_MAP_UPSTREAM) {
+    c.header("Access-Control-Allow-Origin", "*");
+    return c.json({
+      error: "power_map_proxy_misconfigured",
+      message: "Power Map proxy configuration is invalid. Check POWER_MAP_UPSTREAM."
+    }, 503);
+  }
+
+  const proxyPrefix = "/api/power-map";
+  const upstreamPath = c.req.path.slice(proxyPrefix.length) || "/";
+  const requestUrl = new URL(c.req.url);
+  const upstreamUrl = new URL(POWER_MAP_UPSTREAM.origin);
+  upstreamUrl.pathname = upstreamPath;
+  upstreamUrl.search = requestUrl.search;
+
+  try {
+    const requestHeaders = new Headers({
+      Accept: c.req.header("accept") || "*/*",
+      "User-Agent": "EVS0-PowerMap-Proxy/1.0"
+    });
+    for (const name of ["if-none-match", "if-modified-since", "range", "if-range"]) {
+      const value = c.req.header(name);
+      if (value) requestHeaders.set(name, value);
+    }
+
+    // Follow only same-origin HTTPS redirects. Never let upstream redirects turn this
+    // fixed-host proxy into a request path to internal or unrelated services.
+    let currentUrl = upstreamUrl;
+    let upstream: Response;
+    for (let redirectCount = 0; ; redirectCount += 1) {
+      upstream = await fetch(currentUrl, {
+        method: c.req.method,
+        headers: requestHeaders,
+        redirect: "manual",
+        signal: AbortSignal.timeout(45000)
+      });
+
+      if (![301, 302, 303, 307, 308].includes(upstream.status)) break;
+
+      const location = upstream.headers.get("location");
+      if (!location) {
+        await upstream.body?.cancel().catch(() => {});
+        c.header("Access-Control-Allow-Origin", "*");
+        return c.json({
+          error: "power_map_upstream_redirect_invalid",
+          message: "Power Map upstream returned an invalid redirect."
+        }, 502);
+      }
+
+      const nextUrl = new URL(location, currentUrl);
+      if (nextUrl.protocol !== "https:" || nextUrl.origin !== POWER_MAP_UPSTREAM.origin) {
+        await upstream.body?.cancel().catch(() => {});
+        c.header("Access-Control-Allow-Origin", "*");
+        return c.json({
+          error: "power_map_upstream_redirect_blocked",
+          message: "Power Map upstream attempted to redirect outside its configured HTTPS origin."
+        }, 502);
+      }
+
+      if (redirectCount >= 3) {
+        await upstream.body?.cancel().catch(() => {});
+        c.header("Access-Control-Allow-Origin", "*");
+        return c.json({
+          error: "power_map_upstream_redirect_limit",
+          message: "Power Map upstream exceeded the redirect limit."
+        }, 502);
+      }
+
+      await upstream.body?.cancel().catch(() => {});
+      currentUrl = nextUrl;
+    }
+
+    if (upstream.status >= 500) {
+      await upstream.body?.cancel().catch(() => {});
+      c.header("Access-Control-Allow-Origin", "*");
+      return c.json({
+        error: "power_map_upstream_unavailable",
+        message: "Power Map is temporarily unavailable. Retry in a moment."
+      }, 502);
+    }
+
+    const headers = new Headers();
+    for (const name of [
+      "content-type",
+      "cache-control",
+      "etag",
+      "last-modified",
+      "expires",
+      "vary",
+      "content-range",
+      "accept-ranges",
+      "content-disposition"
+    ]) {
+      const value = upstream.headers.get(name);
+      if (value) headers.set(name, value);
+    }
+    headers.set("X-Content-Type-Options", "nosniff");
+    headers.set("X-Power-Map-Proxy", "reclaimchennai/power-map-india");
+    headers.set("Access-Control-Allow-Origin", "*");
+    headers.set("Cross-Origin-Resource-Policy", "cross-origin");
+
+    // Stream large GeoJSON and map assets instead of buffering whole files in API memory.
+    const body = c.req.method === "HEAD" || upstream.status === 204 || upstream.status === 304
+      ? null
+      : upstream.body;
+    return new Response(body, { status: upstream.status, headers });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Upstream request failed";
+    console.error("[POWER-MAP] Proxy error:", message, upstreamUrl.toString());
+    c.header("Access-Control-Allow-Origin", "*");
+    return c.json({
+      error: "power_map_upstream_unavailable",
+      message: "Power Map is temporarily unavailable. Retry in a moment."
+    }, 502);
+  }
+});
+
 const port = Number(process.env.API_PORT || 3002);
 serve({ fetch: app.fetch, port, hostname: process.env.API_HOST || "0.0.0.0" }, (info) => {
   console.log("[API] Hono listening on http://localhost:" + info.port);
