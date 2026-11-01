@@ -2,7 +2,7 @@
   "name": "cuspnode-mock-server",
   "version": "1.0.0",
   "private": true,
-  "description": "Node.js HTTP mock server for the CuspNode ESP32 MQ-135 firmware API",
+  "description": "MQ-135 mock device with a real MQTT broker bridge",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
@@ -12,6 +12,7 @@
     "node": ">=18"
   },
   "dependencies": {
-    "dotenv": "^16.6.1"
+    "dotenv": "^16.6.1",
+    "mqtt": "^5.16.1"
   }
 }
