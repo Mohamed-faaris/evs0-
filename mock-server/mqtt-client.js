@@ -72,12 +72,12 @@ function createMqttBridge(options) {
     reconnecting: false,
     protocol: null,
     broker: null,
-    client_id: env.MQTT_MOCK_CLIENT_ID || ("cuspnode-mock-" + deviceId),
+    client_id: options.clientId || env.MQTT_MOCK_CLIENT_ID || ("cuspnode-mock-" + deviceId),
     auth_configured: Boolean(env.MQTT_USERNAME || env.MQTT_PASSWORD),
     last_connected_at: null,
     last_publish_at: null,
     last_error: null,
-    publish_interval_ms: asPositiveInteger(env.MQTT_PUBLISH_INTERVAL_MS, 5000),
+    publish_interval_ms: asPositiveInteger(options.publishIntervalMs, asPositiveInteger(env.MQTT_PUBLISH_INTERVAL_MS, 5000)),
     topics,
   };
 
