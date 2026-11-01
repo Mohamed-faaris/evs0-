@@ -127,7 +127,7 @@ firmware/
     └── emqx_ca.h             # generated; included by the sketch
 ```
 
-The committed `firmware/certs/emqxsl-ca.crt` is the DigiCert Global Root G2 CA certificate (self-signed, valid through 2038-01-15). It is public trust material, not a private key or MQTT credential. It is suitable only if the EMQX broker's presented certificate chain validates to this root. If EMQX changes its certificate chain, replace the PEM with the CA certificate from the deployment console and regenerate the header.
+The committed `firmware/certs/emqxsl-ca.crt` is now DigiCert Global Root CA (not G2), matching EMQX's Serverless ESP32 connection example. It expires on 2031-11-10. EMQX Serverless requires the CA supplied on the deployment Overview page; if your console's downloaded CA differs, use that deployment-specific file as the source of truth and regenerate the header.
 
 Generate or refresh the header from the repository root:
 
