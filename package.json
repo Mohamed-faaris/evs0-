@@ -12,9 +12,12 @@
     "start:api": "turbo run start --filter=@evs0/api",
     "start:mock": "turbo run start --filter=cuspnode-mock-server",
     "build": "turbo run build",
-    "typecheck": "turbo run typecheck"
+    "typecheck": "turbo run typecheck",
+    "device:provision:mqtt": "tsx scripts/provision-mqtt.ts"
   },
   "devDependencies": {
-    "turbo": "^2.5.6"
+    "turbo": "^2.5.6",
+    "serialport": "^13.0.0",
+    "tsx": "^4.20.0"
   }
 }
