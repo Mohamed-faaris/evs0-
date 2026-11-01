@@ -3,7 +3,9 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CERT_FILE="${ROOT_DIR}/firmware/certs/emqxsl-ca.crt"
-OUTPUT_FILE="${ROOT_DIR}/firmware/emqx_ca.h"
+SKETCH_DIR="${ROOT_DIR}/firmware/cuspnode_mq135"
+OUTPUT_FILE="${SKETCH_DIR}/emqx_ca.h"
+mkdir -p "${SKETCH_DIR}"
 
 if [[ ! -s "${CERT_FILE}" ]]; then
   echo "CA certificate not found: ${CERT_FILE}" >&2
@@ -24,4 +26,4 @@ fi
   printf '%s\n' ')EMQXCA";'
 } > "${OUTPUT_FILE}"
 
-echo "Generated firmware/emqx_ca.h"
+echo "Generated firmware/cuspnode_mq135/emqx_ca.h"
