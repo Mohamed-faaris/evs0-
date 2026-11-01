@@ -198,7 +198,7 @@ export default function App() {
     </section> : tab === "power-map" ? <section className="content power-map-content">
       <div className="sectionhead">
         <div><div className="eyebrow">INDIA ELECTRICITY INFRASTRUCTURE</div><h2>Power Map of India</h2></div>
-        <a className="power-map-open" href={API + "/api/power-map/"} target="_blank" rel="noreferrer">Open full map <Map size={14}/></a>
+        <a className="power-map-open" href={API + "/api/power-map/open"} target="_blank" rel="noreferrer noopener">Open full map <Map size={14}/></a>
       </div>
       <div className="power-map-attribution">
         <span>POWER MAP OF INDIA · RECLAIM CHENNAI</span>
