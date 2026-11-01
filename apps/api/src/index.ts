@@ -246,7 +246,7 @@ app.get("/api/aqi/predictions", (c) => c.json({
   available: false,
   reason: "No validated prediction model is configured yet. Predictions will be enabled after collecting and validating historical data."
 }));
-app.get("/", (c) => c.json({ name: "EVS0 Dashboard API", docs: ["/api/health", "/api/devices", "/api/readings/latest", "/api/readings/history", "/api/power-meter/latest", "/api/power-meter/history", "/api/aqi/current", "/api/aqi/predictions"] }));
+app.get("/", (c) => c.json({ name: "EVS0 Dashboard API", docs: ["/api/health", "/api/devices", "/api/readings/latest", "/api/readings/history", "/api/power-meter/latest", "/api/power-meter/history", "/api/power-meter/carbon", "/api/aqi/current", "/api/aqi/predictions"] }));
 
 const POWER_MAP_UPSTREAM_VALUE = (process.env.POWER_MAP_UPSTREAM || "https://power.reclaimchennai.city").trim();
 let POWER_MAP_UPSTREAM: URL | null = null;
