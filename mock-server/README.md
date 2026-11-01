@@ -7,23 +7,36 @@ Standalone Node.js mock of the ESP32 CuspNode MQ-135 HTTP API. Use it to develop
 - Node.js 18 or newer
 - No npm dependencies
 
-## Run
+## Configure environment
 
-From this directory:
+The server loads `.env` from the repository root (one directory above `mock-server/`), regardless of the directory from which it is started.
+
+From the repository root:
 
 ```bash
+cp .env.example .env
+```
+
+Edit the root `.env` as needed:
+
+```dotenv
+HOST=127.0.0.1
+PORT=3001
+```
+
+Install the mock server dependency and run it:
+
+```bash
+cd mock-server
+npm install
 npm run dev
 ```
 
-Or use `npm start`.
+Or use `npm start` for a normal start.
 
 Default URL: http://127.0.0.1:3001
 
-Override host and port:
-
-```bash
-HOST=0.0.0.0 PORT=3001 npm start
-```
+Use `HOST=0.0.0.0` in the root `.env` only when you need access from another device on your LAN.
 
 ## Endpoints
 
