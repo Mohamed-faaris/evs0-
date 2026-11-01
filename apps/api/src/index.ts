@@ -196,6 +196,33 @@ app.get("/api/power-meter/latest", (c) => {
   ) || null;
   return c.json({ data: latest });
 });
+
+const configuredGridEmissionFactor = Number(process.env.GRID_EMISSION_FACTOR_KG_CO2_PER_KWH || "0.675");
+const GRID_EMISSION_FACTOR_KG_CO2_PER_KWH =
+  Number.isFinite(configuredGridEmissionFactor) && configuredGridEmissionFactor > 0
+    ? configuredGridEmissionFactor
+    : 0.675;
+
+app.get("/api/power-meter/carbon", (c) => {
+  const latest = [...readings].reverse().find((reading) =>
+    reading.device_id === POWER_METER_DEVICE_ID && reading.device_type === "power_meter"
+  ) || null;
+  const energyKwh = latest?.readings?.energy_kwh;
+  return c.json({
+    data: {
+      device_id: POWER_METER_DEVICE_ID,
+      energy_kwh: typeof energyKwh === "number" && Number.isFinite(energyKwh) ? energyKwh : null,
+      emission_factor_kg_co2_per_kwh: GRID_EMISSION_FACTOR_KG_CO2_PER_KWH,
+      estimated_co2_kg: typeof energyKwh === "number" && Number.isFinite(energyKwh)
+        ? energyKwh * GRID_EMISSION_FACTOR_KG_CO2_PER_KWH
+        : null,
+      factor_fiscal_year: "FY2025-26",
+      factor_source: "Central Electricity Authority (CEA), CO2 Baseline Database v22.0",
+      factor_scope: "India national-grid weighted-average electricity factor; CO2 estimate only"
+    }
+  });
+});
+
 app.get("/api/power-meter/history", (c) => {
   const requestedLimit = Number(c.req.query("limit") || 100);
   const limit = Number.isFinite(requestedLimit) ? Math.min(Math.max(requestedLimit, 1), 1000) : 100;
@@ -219,7 +246,7 @@ app.get("/api/aqi/predictions", (c) => c.json({
   available: false,
   reason: "No validated prediction model is configured yet. Predictions will be enabled after collecting and validating historical data."
 }));
-app.get("/", (c) => c.json({ name: "EVS0 Dashboard API", docs: ["/api/health", "/api/devices", "/api/readings/latest", "/api/readings/history", "/api/power-meter/latest", "/api/power-meter/history", "/api/aqi/current", "/api/aqi/predictions"] }));
+app.get("/", (c) => c.json({ name: "EVS0 Dashboard API", docs: ["/api/health", "/api/devices", "/api/readings/latest", "/api/readings/history", "/api/power-meter/latest", "/api/power-meter/history", "/api/power-meter/carbon", "/api/aqi/current", "/api/aqi/predictions"] }));
 
 const POWER_MAP_UPSTREAM_VALUE = (process.env.POWER_MAP_UPSTREAM || "https://power.reclaimchennai.city").trim();
 let POWER_MAP_UPSTREAM: URL | null = null;
