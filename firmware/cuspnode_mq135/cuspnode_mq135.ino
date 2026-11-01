@@ -287,6 +287,52 @@ void loadMQTTConfig() {
   preferences.end();
 }
 
+void diagnoseMQTT() {
+  Serial.println("\n--- MQTT diagnostics ---");
+  Serial.printf("Wi-Fi status : %s\n", WiFi.status() == WL_CONNECTED ? "CONNECTED" : "DISCONNECTED");
+  Serial.printf("Wi-Fi IP     : %s\n", WiFi.status() == WL_CONNECTED ? WiFi.localIP().toString().c_str() : "unavailable");
+  Serial.printf("MQTT enabled : %s\n", mqttConfig.enabled ? "YES" : "NO");
+  Serial.printf("Host set     : %s\n", mqttConfig.host.isEmpty() ? "NO" : "YES");
+  Serial.printf("Port         : %u\n", mqttConfig.port);
+  Serial.printf("Protocol     : %s\n", mqttConfig.protocol.c_str());
+  Serial.printf("Username set : %s\n", mqttConfig.username.isEmpty() ? "NO" : "YES");
+  Serial.printf("Password set : %s\n", mqttConfig.password.isEmpty() ? "NO" : "YES");
+  Serial.printf("CA embedded  : %s\n", sizeof(EMQX_ROOT_CA) > 100 ? "YES" : "NO");
+
+  if (!mqttConfig.enabled) {
+    Serial.println("[DIAG] BLOCKED: MQTT is disabled. Run 'mqtt enable'.");
+  } else if (mqttConfig.host.isEmpty() || mqttConfig.port == 0) {
+    Serial.println("[DIAG] BLOCKED: broker host/port is missing.");
+  } else if (mqttConfig.protocol != "mqtts") {
+    Serial.println("[DIAG] BLOCKED: this diagnostic expects MQTT over TLS (mqtts).");
+  } else if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("[DIAG] BLOCKED: ESP32 station Wi-Fi is not connected.");
+  } else {
+    IPAddress resolved;
+    Serial.printf("[DIAG] DNS lookup %s ... ", mqttConfig.host.c_str());
+    if (WiFi.hostByName(mqttConfig.host.c_str(), resolved) != 1) {
+      Serial.println("FAILED");
+      Serial.println("[DIAG] Check Wi-Fi internet access and broker hostname.");
+    } else {
+      Serial.printf("OK (%s)\n", resolved.toString().c_str());
+      WiFiClient probe;
+      Serial.printf("[DIAG] TCP connect %s:%u ... ", mqttConfig.host.c_str(), mqttConfig.port);
+      if (probe.connect(resolved, mqttConfig.port, 5000)) {
+        Serial.println("OK");
+        probe.stop();
+        Serial.println("[DIAG] Network path and TCP port are reachable.");
+      } else {
+        Serial.println("FAILED");
+        Serial.println("[DIAG] Check outbound firewall, broker endpoint, and port.");
+      }
+    }
+  }
+
+  Serial.println("[DIAG] MQTT/TLS client is not implemented in this firmware.");
+  Serial.println("[DIAG] TCP success does NOT verify TLS certificate or MQTT credentials.");
+  Serial.println("------------------------");
+}
+
 void printMQTTStatus() {
   Serial.println("\n--- MQTT configuration ---");
   Serial.printf("Enabled  : %s\n", mqttConfig.enabled ? "YES" : "NO");
@@ -735,6 +781,7 @@ void handleSerialCommand(String command) {
       sensorADC, adcVoltage, sensorValid ? "yes" : "no");
   }
   else if (command == "mqtt status") printMQTTStatus();
+  else if (command == "mqtt diagnose") diagnoseMQTT();
   else if (command.startsWith("mqtt set-server ")) {
     String args = command.substring(16);
     int separator = args.indexOf(' ');
