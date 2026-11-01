@@ -199,6 +199,10 @@ Use QoS 0 for high-frequency telemetry where occasional loss is acceptable, or Q
 - Use a unique `device_id` for every physical node before deploying multiple devices.
 - Synchronize time (for example, using NTP) before publishing UTC timestamps. Until time is available, send `timestamp: null` and retain `uptime_seconds`.
 
+## Firmware metadata
+
+The ESP32 firmware defines a manually maintained `FIRMWARE_VERSION` and compiler-generated `FIRMWARE_BUILD_DATE`/`FIRMWARE_BUILD_TIME` values. They are printed at startup and in Serial status output, and exposed by `GET /api/health` as `firmware.version`, `firmware.build_date`, and `firmware.build_time`. The build timestamp represents compile time, not the exact flash/upload time.
+
 ## TLS CA certificate
 
 The public CA certificate is stored at `firmware/certs/emqxsl-ca.crt` and generated into `firmware/cuspnode_mq135/emqx_ca.h` by running `./firmware/generate-ca-header.sh` from the repository root. The firmware includes this header, which defines `EMQX_ROOT_CA` in program memory. The supplied certificate identifies as DigiCert Global Root G2 and expires on 2038-01-15. Confirm that the live EMQX broker certificate chain terminates at this root before enabling TLS. The certificate is public trust material; do not put MQTT passwords or private keys in the repository.
