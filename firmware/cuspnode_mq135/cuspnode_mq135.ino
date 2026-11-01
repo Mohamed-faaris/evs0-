@@ -340,6 +340,8 @@ void diagnoseMQTT() {
 
 void printMQTTStatus() {
   Serial.println("\n--- MQTT configuration ---");
+  Serial.printf("Firmware : v%s\n", FIRMWARE_VERSION);
+  Serial.printf("Built    : %s %s\n", FIRMWARE_BUILD_DATE, FIRMWARE_BUILD_TIME);
   Serial.printf("Enabled  : %s\n", mqttConfig.enabled ? "YES" : "NO");
   Serial.printf("Host     : %s\n", mqttConfig.host.isEmpty() ? "(not set)" : mqttConfig.host.c_str());
   Serial.printf("Port     : %u\n", mqttConfig.port);
