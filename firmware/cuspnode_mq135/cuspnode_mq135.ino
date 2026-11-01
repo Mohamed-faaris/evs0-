@@ -302,7 +302,7 @@ void saveMQTTConfig() {
   preferences.putString("password", mqttConfig.password);
   preferences.putBool("enabled", mqttConfig.enabled);
   preferences.end();
-  if (mqttClient.connected()) mqttClient.disconnect();
+  disconnectMQTTGracefully();
   lastMQTTConnectAttemptMs = 0;
   Serial.println("[MQTT] Configuration saved to NVS.");
 }
@@ -466,6 +466,21 @@ bool publishMQTTAvailability(bool online) {
   return mqttClient.publish(mqttAvailabilityTopic.c_str(), payload, true, 1);
 }
 
+void disconnectMQTTGracefully() {
+  if (!mqttClient.connected()) return;
+  if (!publishMQTTAvailability(false)) {
+    Serial.println("[MQTT] Could not publish retained offline availability.");
+  }
+  mqttClient.disconnect();
+}
+
+void dropMQTTTransport() {
+  // Do not send MQTT DISCONNECT when the network has failed; let the broker
+  // detect the broken connection and publish the configured Last Will.
+  mqttTlsClient.stop();
+  mqttClient.disconnect();
+}
+
 bool publishMQTTState() {
   StaticJsonDocument<512> doc;
   doc["schema_version"] = 1;
@@ -536,7 +551,7 @@ void updateMQTT() {
   if (!mqttConfig.enabled || mqttConfig.host.isEmpty() ||
       mqttConfig.port == 0 || mqttConfig.protocol != "mqtts") {
     if (mqttClient.connected()) {
-      mqttClient.disconnect();
+      disconnectMQTTGracefully();
       Serial.println("[MQTT] Disconnected because MQTT is disabled or configuration is invalid.");
     }
     return;
@@ -544,8 +559,8 @@ void updateMQTT() {
 
   if (WiFi.status() != WL_CONNECTED) {
     if (mqttClient.connected()) {
-      mqttClient.disconnect();
-      Serial.println("[MQTT] Disconnected because station Wi-Fi is down.");
+      dropMQTTTransport();
+      Serial.println("[MQTT] Wi-Fi lost; broker Last Will should mark this device offline.");
     }
     return;
   }
@@ -554,10 +569,12 @@ void updateMQTT() {
   if (!ntpTimeSynced) return;
 
   if (mqttClient.connected()) {
-    mqttClient.loop();
+    const bool loopOk = mqttClient.loop();
 
-    if (!mqttClient.connected()) {
-      Serial.println("[MQTT] Connection lost; automatic reconnect scheduled.");
+    if (!loopOk || !mqttClient.connected()) {
+      Serial.printf("[MQTT] Loop/transport failed (library error=%d); reconnect scheduled.\\n",
+        static_cast<int>(mqttClient.lastError()));
+      dropMQTTTransport();
       return;
     }
 
@@ -1066,7 +1083,7 @@ void handleSerialCommand(String command) {
   else if (command == "mqtt status") printMQTTStatus();
   else if (command == "mqtt diagnose") diagnoseMQTT();
   else if (command == "mqtt reconnect") {
-    if (mqttClient.connected()) mqttClient.disconnect();
+    disconnectMQTTGracefully();
     lastMQTTConnectAttemptMs = 0;
     Serial.println("[MQTT] Reconnect requested; the main loop will attempt it.");
   }
