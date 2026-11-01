@@ -294,7 +294,11 @@ function getCurrentPowerMeterReadings(): Telemetry[] {
         : session + ":received:" + reading.received_at;
     deduplicated.set(sampleKey, reading);
   }
-  return [...deduplicated.values()];
+  return [...deduplicated.values()].sort((left, right) => {
+    const leftTime = Date.parse(left.timestamp || left.received_at);
+    const rightTime = Date.parse(right.timestamp || right.received_at);
+    return leftTime - rightTime;
+  });
 }
 
 app.get("/api/power-meter/carbon", (c) => {
