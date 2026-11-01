@@ -49,8 +49,16 @@ const readings: Telemetry[] = [];
 const states = new Map<string, DeviceState>();
 const availability = new Map<string, Availability>();
 const MAX_READINGS = 5000;
-const FORECAST_MIN_SAMPLES = Math.min(500, Math.max(5, Number(process.env.FORECAST_MIN_SAMPLES || 10)));
-const FORECAST_WINDOW_SAMPLES = Math.min(1000, Math.max(FORECAST_MIN_SAMPLES, Number(process.env.FORECAST_WINDOW_SAMPLES || 120)));
+function resolveBoundedInteger(value: string | undefined, fallback: number, minimum: number, maximum: number): number {
+  const parsed = Number(value);
+  return Number.isInteger(parsed) ? Math.min(maximum, Math.max(minimum, parsed)) : fallback;
+}
+
+const FORECAST_MIN_SAMPLES = resolveBoundedInteger(process.env.FORECAST_MIN_SAMPLES, 10, 5, 500);
+const FORECAST_WINDOW_SAMPLES = Math.max(
+  FORECAST_MIN_SAMPLES,
+  resolveBoundedInteger(process.env.FORECAST_WINDOW_SAMPLES, 120, 10, 1000)
+);
 
 function resolveAlpha(value: string | undefined, fallback: number): number {
   const parsed = Number(value);
