@@ -63,7 +63,7 @@ pnpm start:mock
 - Orchestration: pnpm workspaces + Turborepo
 - Authentication: none; dashboard APIs are read-only
 
-The API also exposes a read-only same-origin proxy at `/api/power-map/*` for the Power Map of India. It forwards the upstream map page, relative JS/CSS/JSON/GeoJSON assets, and available API routes to `POWER_MAP_UPSTREAM` (default `https://power.reclaimchennai.city`). This keeps browser requests to the Power Map host same-origin and avoids CORS for those resources. Map tiles, glyphs, fonts, weather and CDN resources hosted by third parties remain direct requests to their respective providers.
+The API also exposes a read-only proxy at `/api/power-map/*` for the Power Map of India. It serves the upstream map page, relative JS/CSS/JSON/GeoJSON assets, and available API routes beneath the configured API origin, fetching them server-to-server from `POWER_MAP_UPSTREAM` (default `https://power.reclaimchennai.city`). The embedded page runs in a sandboxed iframe with an opaque origin; the proxy allows anonymous CORS reads for its public assets and data. Map tiles, glyphs, fonts, weather and CDN resources hosted by third parties remain direct requests to their respective providers.
 
 The API subscribes to telemetry, state, and availability topics under `MQTT_TOPIC_ROOT`. It keeps MQ-135 and power-meter readings separate and exposes `/api/power-meter/latest` and `/api/power-meter/history`. The mock server publishes two independent MQTT identities: `DEVICE_ID` (default `device-001`) and `POWER_METER_DEVICE_ID` (default `power-meter-001`). Both use the broker credentials from `.env`, but each has a distinct MQTT client ID.
 
@@ -80,7 +80,7 @@ The mock power meter sends synthetic single-phase electrical values through MQTT
 
 The **Power Map** tab embeds the public Power Map of India by [Reclaim Chennai](https://github.com/reclaimchennai/power-map-india). EVS0 does not copy or fork its map renderer or data pipeline. The original frontend and published data are loaded through the read-only Hono proxy at `/api/power-map/`.
 
-Set `POWER_MAP_UPSTREAM=https://power.reclaimchennai.city` in the repository-root `.env` to select the upstream deployment. The browser iframe, its relative scripts/stylesheets, and map JSON/GeoJSON requests use the EVS0 origin; the Hono server fetches the upstream resources server-to-server. Only GET and HEAD are allowed, and the target host is configured by the server environment rather than by a user-supplied URL.
+Set `POWER_MAP_UPSTREAM=https://power.reclaimchennai.city` in the repository-root `.env` to select the upstream deployment. The iframe, its relative scripts/stylesheets, and map JSON/GeoJSON requests use the configured API origin; the Hono server fetches upstream resources server-to-server. GET and HEAD are proxied, OPTIONS preflight is answered locally, and other methods are rejected. The target host is configured by the server environment rather than by a user-supplied URL.
 
 The upstream project also publishes FastAPI endpoints below `/api/`; requests to paths such as `/api/power-map/api/coal/latest` are passed through to the corresponding upstream `/api/coal/latest` route when that route is available in the deployed service. The embedded map itself primarily loads the upstream site's published static data under `/data/`.
 
