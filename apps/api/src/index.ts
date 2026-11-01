@@ -268,7 +268,10 @@ function isCurrentPowerMeterReading(reading: Telemetry): boolean {
 
   const meterState = states.get(POWER_METER_DEVICE_ID);
   const currentSessionId = meterState?.session_id;
-  if (typeof currentSessionId === "string" && currentSessionId.length > 0 && reading.session_id !== currentSessionId) {
+  if (typeof currentSessionId === "string" && currentSessionId.length > 0) {
+    if (reading.session_id !== currentSessionId) return false;
+  } else if (typeof reading.session_id === "string" && reading.session_id.length > 0) {
+    // Session-tagged telemetry is not current until its matching retained state arrives.
     return false;
   }
 
