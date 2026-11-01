@@ -9,6 +9,7 @@ dotenv.config({ path: path.resolve(__dirname, "../.env") });
 const HOST = process.env.HOST || "127.0.0.1";
 const PORT = Number(process.env.PORT || 3001);
 const DEVICE_ID = process.env.DEVICE_ID || "device-001";
+const POWER_METER_DEVICE_ID = process.env.POWER_METER_DEVICE_ID || "power-meter-001";
 const HOTSPOT_SSID = "cuspnode-mq135";
 const HOTSPOT_IP = "192.168.4.1";
 const MAX_WIFI_NETWORKS = 10;
@@ -28,6 +29,10 @@ const nearbyNetworks = [
 let wifiConnected = true;
 let connectedSSID = "faaris";
 let sensorSequence = 0;
+let powerMeterSequence = 0;
+let powerEnergyKwh = 17.624;
+let lastPowerSampleAt = startedAt;
+const powerMeterStartedAt = Date.now();
 const uptimeSeconds = () => Math.floor((Date.now() - startedAt) / 1000);
 
 function readSensor() {
@@ -77,15 +82,76 @@ function buildDeviceState() {
   };
 }
 
+function buildPowerMeterTelemetry() {
+  const now = Date.now();
+  const elapsedHours = Math.max(0, now - lastPowerSampleAt) / 3600000;
+  lastPowerSampleAt = now;
+
+  // Synthetic single-phase mains values. These are demonstration values,
+  // not measurements from a real CT clamp, energy IC, or utility meter.
+  const voltage = 230 + 1.8 * Math.sin(now / 47000);
+  const current = 1.35 + 0.38 * (0.5 + 0.5 * Math.sin(now / 16000)) +
+    0.10 * Math.sin(now / 4100);
+  const powerFactor = 0.92 + 0.025 * Math.sin(now / 29000);
+  const apparentPower = voltage * current;
+  const activePower = apparentPower * powerFactor;
+  const reactivePower = Math.sqrt(Math.max(0, apparentPower ** 2 - activePower ** 2));
+
+  powerEnergyKwh += activePower * elapsedHours / 1000;
+  powerMeterSequence += 1;
+
+  return {
+    schema_version: 1,
+    device_id: POWER_METER_DEVICE_ID,
+    device_type: "power_meter",
+    meter_model: "single_phase_ac_mock",
+    timestamp: new Date(now).toISOString(),
+    uptime_seconds: Math.floor((now - powerMeterStartedAt) / 1000),
+    sequence: powerMeterSequence,
+    readings: {
+      voltage_v: Number(voltage.toFixed(2)),
+      current_a: Number(current.toFixed(3)),
+      active_power_w: Number(activePower.toFixed(1)),
+      apparent_power_va: Number(apparentPower.toFixed(1)),
+      reactive_power_var: Number(reactivePower.toFixed(1)),
+      power_factor: Number(powerFactor.toFixed(3)),
+      frequency_hz: Number((50 + 0.025 * Math.sin(now / 53000)).toFixed(2)),
+      energy_kwh: Number(powerEnergyKwh.toFixed(5))
+    },
+    valid: true
+  };
+}
+
+function buildPowerMeterState() {
+  return {
+    schema_version: 1,
+    device_id: POWER_METER_DEVICE_ID,
+    device_type: "power_meter",
+    state: "SIMULATED_ONLINE",
+    uptime_seconds: Math.floor((Date.now() - powerMeterStartedAt) / 1000),
+    meter: { model: "single_phase_ac_mock", valid: true },
+    mqtt: { connected: powerMeterBridge.getStatus().connected }
+  };
+}
+
 const mqttBridge = createMqttBridge({
   deviceId: DEVICE_ID,
   getTelemetry: buildTelemetry,
   getState: buildDeviceState,
 });
 
+const powerMeterBridge = createMqttBridge({
+  deviceId: POWER_METER_DEVICE_ID,
+  clientId: process.env.MQTT_POWER_METER_CLIENT_ID || "cuspnode-mock-power-meter-001",
+  publishIntervalMs: process.env.MQTT_POWER_METER_PUBLISH_INTERVAL_MS,
+  getTelemetry: buildPowerMeterTelemetry,
+  getState: buildPowerMeterState
+});
+
 function health() {
   const sensor = readSensor();
   const mqtt = mqttBridge.getStatus();
+  const powerMqtt = powerMeterBridge.getStatus();
   return {
     status: "ok",
     device_id: DEVICE_ID,
@@ -114,6 +180,16 @@ function health() {
       last_publish_at: mqtt.last_publish_at,
       last_error: mqtt.last_error,
       publish_interval_ms: mqtt.publish_interval_ms,
+      power_meter: {
+        device_id: POWER_METER_DEVICE_ID,
+        configured: powerMqtt.configured,
+        connected: powerMqtt.connected,
+        reconnecting: powerMqtt.reconnecting,
+        client_id: powerMqtt.client_id,
+        last_publish_at: powerMqtt.last_publish_at,
+        last_error: powerMqtt.last_error,
+        publish_interval_ms: powerMqtt.publish_interval_ms
+      }
     },
   };
 }
@@ -414,7 +490,7 @@ const server = http.createServer(async (req, res) => {
   if (req.method === "GET" && url.pathname === "/") return sendPortal(res);
   if (req.method === "GET" && url.pathname === "/api/health") return sendJson(res, 200, health());
   if (req.method === "GET" && url.pathname === "/api/mq135") return sendJson(res, 200, mq135());
-  if (req.method === "GET" && url.pathname === "/api/mqtt") return sendJson(res, 200, mqttBridge.getStatus());
+  if (req.method === "GET" && url.pathname === "/api/mqtt") return sendJson(res, 200, { mq135: mqttBridge.getStatus(), power_meter: powerMeterBridge.getStatus() });
   if (req.method === "GET" && url.pathname === "/api/wifi") return sendJson(res, 200, wifiList());
   if (req.method === "GET" && url.pathname === "/api/wifi/scan") return sendJson(res, 200, wifiScan());
 
@@ -456,17 +532,19 @@ const server = http.createServer(async (req, res) => {
 });
 
 mqttBridge.start();
+powerMeterBridge.start();
 
 server.listen(PORT, HOST, () => {
   console.log("[MOCK] CuspNode mock server listening at http://" + HOST + ":" + PORT);
   console.log("[MOCK] Endpoints: /api/health /api/mq135 /api/mqtt /api/wifi /api/wifi/scan");
+  console.log("[MOCK] Power meter device: " + POWER_METER_DEVICE_ID + " -> " + (process.env.MQTT_TOPIC_ROOT || "evs/v1/devices") + "/" + POWER_METER_DEVICE_ID + "/telemetry");
   console.log("[MOCK] Sensor and Wi-Fi values are simulated; MQTT publishes to the configured broker.");
 });
 
 async function shutdown(signal) {
   console.log("[MOCK] " + signal + " received; shutting down.");
   server.close();
-  await mqttBridge.stop();
+  await Promise.all([mqttBridge.stop(), powerMeterBridge.stop()]);
   process.exit(0);
 }
 process.once("SIGINT", () => void shutdown("SIGINT"));
