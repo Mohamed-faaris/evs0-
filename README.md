@@ -78,3 +78,24 @@ MQ-135 alone does not provide PM2.5, PM10, or official CPCB AQI. The UI intentio
 - No AI model is wired yet.
 - Broker connection details must be verified against the deployed MQTT service.
 - No authentication is configured; keep the dashboard read-only.
+
+
+## Provision MQTT settings to an ESP32
+
+The firmware stores the MQTT broker endpoint, protocol, username, password, and enabled flag in ESP32 Preferences (NVS). Use the TypeScript provisioning utility to load the repository-root `.env` and send those settings over USB serial. This avoids editing firmware constants for credential changes.
+
+1. Add the USB serial device path to the root `.env`, for example `ESP32_PORT=/dev/ttyUSB0`.
+2. Set `MQTT_HOST`, `MQTT_PROTOCOL`, `MQTT_PORT`, `MQTT_USERNAME`, and `MQTT_PASSWORD` in the same file. Use the exact broker port supplied by the broker administrator.
+3. Close Arduino IDE Serial Monitor (only one process can own the serial port).
+4. Run from the repository root:
+
+```bash
+pnpm install
+pnpm device:provision:mqtt
+# or specify the serial port directly:
+pnpm device:provision:mqtt -- --port /dev/ttyUSB0
+```
+
+The script sends the configuration to the connected ESP32 at 115200 baud. The firmware CLI also supports `mqtt status`, `mqtt set-server`, `mqtt set-protocol`, `mqtt set-auth`, `mqtt clear-auth`, `mqtt enable`, and `mqtt disable`.
+
+**Current scope:** this adds persistent MQTT configuration/provisioning only. MQTT transport, TLS certificate validation, telemetry publishing, and broker reconnect handling are not implemented in the ESP32 firmware yet. The dashboard API's MQTT subscriber is separate.
