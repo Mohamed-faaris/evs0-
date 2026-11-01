@@ -81,7 +81,7 @@ The mock power meter sends synthetic single-phase electrical values through MQTT
 
 Estimated CO₂ (kg) = metered energy (kWh) × grid emission factor (kg CO₂/kWh).
 
-The default factor is 0.675 kg CO₂/kWh, the FY2025-26 all-India weighted-average grid factor from CEA CO₂ Baseline Database v22.0. Configure GRID_EMISSION_FACTOR_KG_CO2_PER_KWH in the repository-root .env when using a different documented factor. This is a location-based CO₂ estimate, not an offset, avoided-emissions claim, carbon credit, or full lifecycle CO₂e assessment. For the mock device, the estimate covers energy accumulated since the current mock process started.
+The default factor is 0.675 kg CO₂/kWh, the FY2025-26 all-India weighted-average grid factor from CEA CO₂ Baseline Database v22.0. Configure GRID_EMISSION_FACTOR_KG_CO2_PER_KWH in the repository-root .env when using a different documented factor. The API rejects a non-finite or non-positive configured factor instead of silently replacing it. When a non-default factor is configured, set GRID_EMISSION_FACTOR_SOURCE, GRID_EMISSION_FACTOR_FISCAL_YEAR, and GRID_EMISSION_FACTOR_SCOPE; otherwise the API labels the provenance as custom and does not attribute it to CEA. This is a location-based CO₂ estimate, not an offset, avoided-emissions claim, carbon credit, or full lifecycle CO₂e assessment. For the mock device, the estimate covers energy accumulated since the current mock process started.
 
 ### Lightweight forecasting models
 
@@ -89,7 +89,7 @@ The API offers two simple exponential-smoothing (SES) baselines:
 - `GET /api/aqi/response-forecast` estimates the next MQ-135 raw ADC response. It is for sensor-response smoothing and drift monitoring only; it does not output AQI, PM2.5, PM10, or pollutant concentrations.
 - `GET /api/power-meter/forecast` smooths recent active-power readings and projects a flat load over 24 hours, 7 days, and 30 days, including the associated grid-CO₂ estimates.
 
-Configure `SENSOR_FORECAST_ALPHA` and `ENERGY_FORECAST_ALPHA` (default `0.25`, valid range greater than 0 through 1), `FORECAST_MIN_SAMPLES` (default `10`), and `FORECAST_WINDOW_SAMPLES` (default `120`) in the root `.env`. Higher alpha values react faster to recent readings; lower values smooth more strongly. Forecasts are unavailable until the configured minimum sample count is reached. These are statistical baselines, not trained AI/ML models. The API's in-memory reading history is cleared when the API restarts.
+Configure `SENSOR_FORECAST_ALPHA` and `ENERGY_FORECAST_ALPHA` (default `0.25`, valid range greater than 0 through 1), `FORECAST_MIN_SAMPLES` (default `10`), and `FORECAST_WINDOW_SAMPLES` (default `120`) in the root `.env`. Higher alpha values react faster to recent readings; lower values smooth more strongly. Forecasts are unavailable until the configured minimum sample count is reached. These are statistical baselines, not trained AI/ML models. The API's in-memory reading history is cleared when the API restarts. Power-meter readings include a mock-process session ID; the API only returns estimates for the current session while MQTT availability is online and the latest sample is fresh. Configure POWER_METER_MAX_AGE_SECONDS (default 20 seconds) to adjust the freshness window. Redelivered samples are deduplicated by session and sequence before smoothing.
 
 
 
