@@ -95,7 +95,7 @@ pnpm device:provision:mqtt
 pnpm device:provision:mqtt -- --port /dev/ttyUSB0
 ```
 
-The script sends the configuration to the connected ESP32 at 115200 baud. The firmware CLI also supports `mqtt status`, `mqtt set-server`, `mqtt set-protocol`, `mqtt set-auth`, `mqtt clear-auth`, `mqtt enable`, and `mqtt disable`.
+The script sends the configuration to the connected ESP32 at 115200 baud. The firmware CLI also supports `mqtt status` and `mqtt diagnose`. The diagnostic checks Wi-Fi state, required NVS fields, embedded CA presence, DNS resolution, and TCP reachability of the configured broker port. A successful TCP check does not prove TLS certificate validation or MQTT authentication. The CLI also supports ` `mqtt set-server`, `mqtt set-protocol`, `mqtt set-auth`, `mqtt clear-auth`, `mqtt enable`, and `mqtt disable`.
 
 ## ESP32 MQTT TLS CA certificate
 
