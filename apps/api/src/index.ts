@@ -10,6 +10,8 @@ type Telemetry = {
   schema_version?: number;
   device_id: string;
   sensor?: string;
+  device_type?: "sensor" | "power_meter";
+  meter_model?: string;
   timestamp?: string | null;
   uptime_seconds?: number;
   sequence?: number;
@@ -18,6 +20,14 @@ type Telemetry = {
     adc_pin_voltage_v?: number;
     sensor_ao_voltage_v?: number;
     ppm?: number | null;
+    voltage_v?: number;
+    current_a?: number;
+    active_power_w?: number;
+    apparent_power_va?: number;
+    reactive_power_var?: number;
+    power_factor?: number;
+    frequency_hz?: number;
+    energy_kwh?: number;
   };
   valid?: boolean;
   received_at: string;
@@ -39,6 +49,7 @@ const readings: Telemetry[] = [];
 const states = new Map<string, DeviceState>();
 const availability = new Map<string, Availability>();
 const MAX_READINGS = 5000;
+const POWER_METER_DEVICE_ID = process.env.POWER_METER_DEVICE_ID || "power-meter-001";
 let mqttConnected = false;
 
 function parseJson(payload: Buffer): Record<string, unknown> | null {
@@ -179,6 +190,20 @@ app.get("/api/readings/latest", (c) => {
   const latest = [...readings].reverse().find((reading) => !deviceId || reading.device_id === deviceId) || null;
   return c.json({ data: latest });
 });
+app.get("/api/power-meter/latest", (c) => {
+  const latest = [...readings].reverse().find((reading) =>
+    reading.device_id === POWER_METER_DEVICE_ID && reading.device_type === "power_meter"
+  ) || null;
+  return c.json({ data: latest });
+});
+app.get("/api/power-meter/history", (c) => {
+  const requestedLimit = Number(c.req.query("limit") || 100);
+  const limit = Number.isFinite(requestedLimit) ? Math.min(Math.max(requestedLimit, 1), 1000) : 100;
+  const data = readings
+    .filter((reading) => reading.device_id === POWER_METER_DEVICE_ID && reading.device_type === "power_meter")
+    .slice(-limit);
+  return c.json({ data });
+});
 app.get("/api/readings/history", (c) => {
   const deviceId = c.req.query("device_id");
   const requestedLimit = Number(c.req.query("limit") || 100);
@@ -194,7 +219,7 @@ app.get("/api/aqi/predictions", (c) => c.json({
   available: false,
   reason: "No validated prediction model is configured yet. Predictions will be enabled after collecting and validating historical data."
 }));
-app.get("/", (c) => c.json({ name: "EVS0 Dashboard API", docs: ["/api/health", "/api/devices", "/api/readings/latest", "/api/readings/history", "/api/aqi/current", "/api/aqi/predictions"] }));
+app.get("/", (c) => c.json({ name: "EVS0 Dashboard API", docs: ["/api/health", "/api/devices", "/api/readings/latest", "/api/readings/history", "/api/power-meter/latest", "/api/power-meter/history", "/api/aqi/current", "/api/aqi/predictions"] }));
 
 const port = Number(process.env.API_PORT || 3002);
 serve({ fetch: app.fetch, port, hostname: process.env.API_HOST || "0.0.0.0" }, (info) => {
