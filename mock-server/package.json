@@ -1,0 +1,14 @@
+{
+  "name": "cuspnode-mock-server",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Node.js HTTP mock server for the CuspNode ESP32 MQ-135 firmware API",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
