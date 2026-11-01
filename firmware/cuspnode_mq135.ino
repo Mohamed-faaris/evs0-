@@ -10,6 +10,10 @@
 #include <Preferences.h>
 #include <ArduinoJson.h>
 
+// Forward declaration: Arduino's prototype generator may emit function
+// declarations before the full struct definition below.
+struct LedPattern;
+
 // ============================================================
 // USER CONFIGURATION
 // ============================================================
@@ -571,7 +575,7 @@ void handleWiFiRemove() {
     sendJsonError(404, "Saved network not found.");
     return;
   }
-  server.send(200, "application/json", "{"status":"removed"}");
+  server.send(200, "application/json", "{\"status\":\"removed\"}");
 }
 
 void setupHttpServer() {
@@ -614,8 +618,7 @@ Passwords are never printed.
 void handleSerialCommand(String command) {
   command.trim();
   if (command.isEmpty()) return;
-  Serial.printf("[CLI] %s
-", command.c_str());
+  Serial.printf("[CLI] %s\n", command.c_str());
 
   if (command == "help") printHelp();
   else if (command == "status") printStatus();
@@ -624,8 +627,7 @@ void handleSerialCommand(String command) {
     int count = WiFi.scanNetworks(false, true);
     Serial.println("--- Nearby Wi-Fi ---");
     for (int i = 0; i < count; ++i)
-      Serial.printf("%d. %s | %d dBm
-", i + 1, WiFi.SSID(i).c_str(), WiFi.RSSI(i));
+      Serial.printf("%d. %s | %d dBm\n", i + 1, WiFi.SSID(i).c_str(), WiFi.RSSI(i));
     WiFi.scanDelete();
   }
   else if (command.startsWith("wifi add ")) {
@@ -653,19 +655,16 @@ void handleSerialCommand(String command) {
   }
   else if (command == "sensor" || command == "sensor read") {
     readSensor();
-    Serial.printf("ADC=%d | ADC voltage=%.3f V | valid=%s
-",
+    Serial.printf("ADC=%d | ADC voltage=%.3f V | valid=%s\n",
       sensorADC, adcVoltage, sensorValid ? "yes" : "no");
   }
   else if (command == "ap status") {
-    Serial.printf("SSID=%s | IP=%s | clients=%u
-",
+    Serial.printf("SSID=%s | IP=%s | clients=%u\n",
       HOTSPOT_SSID, WiFi.softAPIP().toString().c_str(),
       WiFi.softAPgetStationNum());
   }
   else if (command == "device info") {
-    Serial.printf("Chip=%s | cores=%u | flash=%u | heap=%u
-",
+    Serial.printf("Chip=%s | cores=%u | flash=%u | heap=%u\n",
       ESP.getChipModel(), ESP.getChipCores(),
       ESP.getFlashChipSize(), ESP.getFreeHeap());
   }
@@ -702,8 +701,7 @@ void setup() {
   analogSetPinAttenuation(MQ135_PIN, ADC_11db);
 
   setState(BOOTING);
-  Serial.println("
-[CUSPNODE] ESP32 MQ-135 starting");
+  Serial.println("\n[CUSPNODE] ESP32 MQ-135 starting");
 
   loadNetworks();
 
@@ -713,8 +711,7 @@ void setup() {
 
   hotspotActive = WiFi.softAP(HOTSPOT_SSID, HOTSPOT_PASSWORD);
   if (hotspotActive) {
-    Serial.printf("[AP] Started SSID=%s | IP=%s
-",
+    Serial.printf("[AP] Started SSID=%s | IP=%s\n",
       HOTSPOT_SSID, WiFi.softAPIP().toString().c_str());
   } else {
     Serial.println("[AP] Failed to start hotspot.");
