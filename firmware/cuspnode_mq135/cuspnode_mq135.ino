@@ -572,7 +572,7 @@ void updateMQTT() {
     const bool loopOk = mqttClient.loop();
 
     if (!loopOk || !mqttClient.connected()) {
-      Serial.printf("[MQTT] Loop/transport failed (library error=%d); reconnect scheduled.\\n",
+      Serial.printf("[MQTT] Loop/transport failed (library error=%d); reconnect scheduled.\n",
         static_cast<int>(mqttClient.lastError()));
       dropMQTTTransport();
       return;
@@ -642,8 +642,13 @@ void updateMQTT() {
     const int mqttErrorCode = static_cast<int>(mqttClient.lastError());
     const int connackCode = static_cast<int>(mqttClient.returnCode());
 
-    Serial.printf("[MQTT] Connect failed | library error=%d | CONNACK=%d (%s)\n",
-      mqttErrorCode, connackCode, mqttErrorText(connackCode));
+    if (connackCode > 0) {
+      Serial.printf("[MQTT] Connect rejected | library error=%d | CONNACK=%d (%s)\n",
+        mqttErrorCode, connackCode, mqttErrorText(connackCode));
+    } else {
+      Serial.printf("[MQTT] Transport/TLS connection failed | library error=%d | no CONNACK received\n",
+        mqttErrorCode);
+    }
     if (tlsErrorCode != 0) {
       Serial.printf("[TLS] Error %d: %s\n", tlsErrorCode, tlsError);
     }
