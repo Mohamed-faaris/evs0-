@@ -201,7 +201,7 @@ Use QoS 0 for high-frequency telemetry where occasional loss is acceptable, or Q
 
 ## TLS CA certificate
 
-The public CA certificate is stored at `firmware/certs/emqxsl-ca.crt` and generated into `firmware/emqx_ca.h` by running `./firmware/generate-ca-header.sh` from the repository root. The firmware includes this header, which defines `EMQX_ROOT_CA` in program memory. The supplied certificate identifies as DigiCert Global Root G2 and expires on 2038-01-15. Confirm that the live EMQX broker certificate chain terminates at this root before enabling TLS. The certificate is public trust material; do not put MQTT passwords or private keys in the repository.
+The public CA certificate is stored at `firmware/certs/emqxsl-ca.crt` and generated into `firmware/cuspnode_mq135/emqx_ca.h` by running `./firmware/generate-ca-header.sh` from the repository root. The firmware includes this header, which defines `EMQX_ROOT_CA` in program memory. The supplied certificate identifies as DigiCert Global Root G2 and expires on 2038-01-15. Confirm that the live EMQX broker certificate chain terminates at this root before enabling TLS. The certificate is public trust material; do not put MQTT passwords or private keys in the repository.
 
 **Important:** the CA header is embedded but not yet consumed by an MQTT TLS connection. The firmware does not currently instantiate `WiFiClientSecure`/PubSubClient, connect to the broker, or publish messages.
 
