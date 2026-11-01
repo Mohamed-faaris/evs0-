@@ -221,6 +221,61 @@ app.get("/api/aqi/predictions", (c) => c.json({
 }));
 app.get("/", (c) => c.json({ name: "EVS0 Dashboard API", docs: ["/api/health", "/api/devices", "/api/readings/latest", "/api/readings/history", "/api/power-meter/latest", "/api/power-meter/history", "/api/aqi/current", "/api/aqi/predictions"] }));
 
+const POWER_MAP_UPSTREAM = new URL(process.env.POWER_MAP_UPSTREAM || "https://power.reclaimchennai.city");
+if (POWER_MAP_UPSTREAM.protocol !== "https:") {
+  throw new Error("POWER_MAP_UPSTREAM must use HTTPS.");
+}
+
+// Read-only reverse proxy for the public Power Map site. The iframe and its relative
+// JS/CSS/JSON/GeoJSON requests stay on this origin, avoiding browser CORS requests
+// to power.reclaimchennai.city. External tile/CDN providers used by the map remain
+// direct requests to those providers.
+app.get("/api/power-map", (c) => c.redirect("/api/power-map/"));
+app.all("/api/power-map/*", async (c) => {
+  if (c.req.method !== "GET" && c.req.method !== "HEAD") {
+    return c.text("Power Map proxy is read-only.", 405, { Allow: "GET, HEAD" });
+  }
+
+  const proxyPrefix = "/api/power-map";
+  const upstreamPath = c.req.path.slice(proxyPrefix.length) || "/";
+  const requestUrl = new URL(c.req.url);
+  const upstreamUrl = new URL(POWER_MAP_UPSTREAM.origin);
+  upstreamUrl.pathname = upstreamPath;
+  upstreamUrl.search = requestUrl.search;
+
+  try {
+    const upstream = await fetch(upstreamUrl, {
+      method: c.req.method,
+      headers: {
+        Accept: c.req.header("accept") || "*/*",
+        "User-Agent": "EVS0-PowerMap-Proxy/1.0"
+      },
+      redirect: "follow",
+      signal: AbortSignal.timeout(20000)
+    });
+
+    const headers = new Headers();
+    for (const name of ["content-type", "cache-control", "etag", "last-modified", "expires"]) {
+      const value = upstream.headers.get(name);
+      if (value) headers.set(name, value);
+    }
+    headers.set("X-Content-Type-Options", "nosniff");
+    headers.set("X-Power-Map-Proxy", "reclaimchennai/power-map-india");
+
+    const body = c.req.method === "HEAD" || upstream.status === 204 || upstream.status === 304
+      ? null
+      : await upstream.arrayBuffer();
+    return new Response(body, { status: upstream.status, headers });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Upstream request failed";
+    console.error("[POWER-MAP] Proxy error:", message, upstreamUrl.toString());
+    return c.json({
+      error: "power_map_upstream_unavailable",
+      message: "Power Map is temporarily unavailable. Retry in a moment."
+    }, 502);
+  }
+});
+
 const port = Number(process.env.API_PORT || 3002);
 serve({ fetch: app.fetch, port, hostname: process.env.API_HOST || "0.0.0.0" }, (info) => {
   console.log("[API] Hono listening on http://localhost:" + info.port);
