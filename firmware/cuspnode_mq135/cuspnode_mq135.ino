@@ -16,7 +16,7 @@
 #include <esp_sntp.h>
 
 // Increment this for each firmware release. Build date/time are set by the compiler.
-#define FIRMWARE_VERSION "1.1.0"
+#define FIRMWARE_VERSION "1.1.1"
 #define FIRMWARE_BUILD_DATE __DATE__
 #define FIRMWARE_BUILD_TIME __TIME__
 
@@ -368,6 +368,9 @@ void diagnoseMQTT() {
   Serial.printf("[DIAG] MQTT lib error=%d, CONNACK=%d\n",
     static_cast<int>(mqttClient.lastError()),
     static_cast<int>(mqttClient.returnCode()));
+  Serial.printf("[DIAG] MQTT error text: %s\n",
+    mqttLibraryErrorText(static_cast<int>(mqttClient.lastError())));
+  Serial.printf("[DIAG] Free heap: %u bytes\n", ESP.getFreeHeap());
   char tlsError[128] = {0};
   const int tlsErrorCode = mqttTlsClient.lastError(tlsError, sizeof(tlsError));
   Serial.printf("[DIAG] TLS error=%d%s%s\n", tlsErrorCode,
@@ -391,6 +394,8 @@ void printMQTTStatus() {
   Serial.printf("Time sync: %s\n", ntpTimeSynced ? "READY" : "WAITING");
   Serial.printf("MQTT link: %s\n", mqttClient.connected() ? "CONNECTED" : "DISCONNECTED");
   Serial.printf("MQTT error: %d\n", static_cast<int>(mqttClient.lastError()));
+  Serial.printf("MQTT error text: %s\n", mqttLibraryErrorText(static_cast<int>(mqttClient.lastError())));
+  Serial.printf("Free heap: %u bytes\n", ESP.getFreeHeap());
   Serial.printf("MQTT CONNACK: %d\n", static_cast<int>(mqttClient.returnCode()));
   char tlsError[128] = {0};
   const int tlsErrorCode = mqttTlsClient.lastError(tlsError, sizeof(tlsError));
@@ -461,6 +466,26 @@ const char* mqttErrorText(int code) {
     case 4: return "bad username or password";
     case 5: return "not authorized";
     default: return "transport/library error; inspect error codes";
+  }
+}
+
+const char* mqttLibraryErrorText(int code) {
+  switch (code) {
+    case 0: return "success";
+    case -1: return "MQTT buffer too short";
+    case -2: return "MQTT variable integer overflow";
+    case -3: return "network connect failed";
+    case -4: return "network timeout";
+    case -5: return "network read failed";
+    case -6: return "network write failed";
+    case -7: return "MQTT remaining length overflow";
+    case -8: return "MQTT remaining length mismatch";
+    case -9: return "missing or invalid MQTT packet";
+    case -10: return "MQTT connection denied";
+    case -11: return "MQTT subscription failed";
+    case -12: return "MQTT SUBACK overflow";
+    case -13: return "MQTT PING response timeout";
+    default: return "unknown MQTT library error";
   }
 }
 
@@ -552,7 +577,7 @@ bool publishMQTTTelemetry() {
   }
 
   const String topic = makeMQTTTopic("telemetry");
-  return mqttClient.publish(topic.c_str(), payload, false, 1);
+  return mqttClient.publish(topic.c_str(), payload, false, 0);
 }
 
 void updateMQTT() {
@@ -591,7 +616,11 @@ void updateMQTT() {
         mqttStateDirty = false;
         Serial.println("[MQTT] Device state published.");
       } else {
-        Serial.println("[MQTT] State publish failed.");
+        const int publishError = static_cast<int>(mqttClient.lastError());
+        Serial.printf("[MQTT] State publish failed | MQTT error=%d (%s)\n",
+          publishError, mqttLibraryErrorText(publishError));
+        dropMQTTTransport();
+        return;
       }
     }
 
@@ -601,7 +630,10 @@ void updateMQTT() {
         Serial.printf("[MQTT] Telemetry published | seq=%lu | ADC=%d\n",
           static_cast<unsigned long>(mqttTelemetrySequence), sensorADC);
       } else {
-        Serial.println("[MQTT] Telemetry publish failed.");
+        const int publishError = static_cast<int>(mqttClient.lastError());
+        Serial.printf("[MQTT] Telemetry publish failed | MQTT error=%d (%s) | free heap=%u bytes\n",
+          publishError, mqttLibraryErrorText(publishError), ESP.getFreeHeap());
+        dropMQTTTransport();
       }
     }
     return;
@@ -611,9 +643,12 @@ void updateMQTT() {
       millis() - lastMQTTConnectAttemptMs < MQTT_RECONNECT_INTERVAL_MS) return;
 
   lastMQTTConnectAttemptMs = millis();
+  // Ensure a previous failed TLS session has released its socket/context.
+  mqttTlsClient.stop();
   mqttTlsClient.setCACert(EMQX_ROOT_CA);
-  mqttTlsClient.setHandshakeTimeout(15);
+  mqttTlsClient.setHandshakeTimeout(30);
   mqttClient.begin(mqttConfig.host.c_str(), mqttConfig.port, mqttTlsClient);
+  Serial.printf("[MQTT] Free heap before TLS handshake: %u bytes\n", ESP.getFreeHeap());
   mqttClient.setOptions(30, true, 5000);
 
   mqttAvailabilityTopic = makeMQTTTopic("availability");
@@ -639,7 +674,10 @@ void updateMQTT() {
     if (publishMQTTAvailability(true)) {
       Serial.println("[MQTT] Online availability published.");
     } else {
-      Serial.println("[MQTT] Failed to publish online availability.");
+      const int publishError = static_cast<int>(mqttClient.lastError());
+      Serial.printf("[MQTT] Online availability failed | MQTT error=%d (%s)\n",
+        publishError, mqttLibraryErrorText(publishError));
+      dropMQTTTransport();
     }
 
     mqttStateDirty = true;
@@ -654,8 +692,8 @@ void updateMQTT() {
       Serial.printf("[MQTT] Connect rejected | library error=%d | CONNACK=%d (%s)\n",
         mqttErrorCode, connackCode, mqttErrorText(connackCode));
     } else {
-      Serial.printf("[MQTT] Transport/TLS connection failed | library error=%d | no CONNACK received\n",
-        mqttErrorCode);
+      Serial.printf("[MQTT] Transport/TLS connection failed | library error=%d (%s) | no CONNACK received | free heap=%u bytes\n",
+        mqttErrorCode, mqttLibraryErrorText(mqttErrorCode), ESP.getFreeHeap());
     }
     if (tlsErrorCode != 0) {
       Serial.printf("[TLS] Error %d: %s\n", tlsErrorCode, tlsError);
