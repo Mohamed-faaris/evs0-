@@ -674,8 +674,7 @@ void handleSerialCommand(String command) {
 void updateSerialConsole() {
   while (Serial.available() > 0) {
     char c = static_cast<char>(Serial.read());
-    if (c == '
-' || c == '') {
+    if (c == '\n' || c == '\r') {
       if (serialLine.length() > 0) {
         handleSerialCommand(serialLine);
         serialLine = "";
