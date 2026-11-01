@@ -210,7 +210,9 @@ The public CA certificate is stored at `firmware/certs/emqxsl-ca.crt` and genera
 | Capability | Status |
 |---|---|
 | Topic and payload specification | Documented here |
-| MQTT broker settings in ESP32 NVS | Implemented (Serial CLI + TypeScript provisioner) |\n| MQTT connection to `evs.mqtt.cusptech.dev` | Not implemented |
+| MQTT broker settings in ESP32 NVS | Implemented (Serial CLI + TypeScript provisioner) |
+| CA certificate PEM and generated firmware header | Embedded; live TLS validation not yet exercised |
+| MQTT connection to configured broker | Not implemented |
 | Telemetry publishing | Not implemented |
 | State publishing | Not implemented |
 | Availability / LWT | Not implemented |
