@@ -245,6 +245,18 @@ try {
 // JS/CSS/JSON/GeoJSON requests stay on the EVS0 origin. The iframe is sandboxed with
 // an opaque origin, so the proxy explicitly allows anonymous cross-origin reads.
 // External tile/CDN providers used by the map remain direct browser requests.
+app.get("/api/power-map/open", (c) => {
+  const configuredUpstream = POWER_MAP_UPSTREAM;
+  if (!configuredUpstream) {
+    return c.json({
+      error: "power_map_proxy_misconfigured",
+      message: "Power Map proxy configuration is invalid. Check POWER_MAP_UPSTREAM."
+    }, 503);
+  }
+  // Open the upstream on its own origin rather than rendering it as a top-level
+  // document on the EVS0/API origin.
+  return c.redirect(configuredUpstream.origin + "/", 302);
+});
 app.get("/api/power-map", (c) => c.redirect("/api/power-map/"));
 app.options("/api/power-map/*", (c) => new Response(null, {
   status: 204,
