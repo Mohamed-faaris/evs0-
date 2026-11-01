@@ -86,6 +86,9 @@ uint32_t mqttTelemetrySequence = 0;
 static const char MQTT_OFFLINE_PAYLOAD[] =
   R"JSON({"device_id":"device-001","status":"offline"})JSON";
 
+// Used by NVS configuration changes before the transport helpers are defined.
+void disconnectMQTTGracefully();
+
 enum DeviceState : uint8_t {
   BOOTING, WIFI_SCANNING, WIFI_CONNECTING,
   WIFI_CONNECTED, NO_WIFI, SENSOR_ERROR
@@ -364,6 +367,10 @@ void diagnoseMQTT() {
   Serial.printf("[DIAG] MQTT lib error=%d, CONNACK=%d\n",
     static_cast<int>(mqttClient.lastError()),
     static_cast<int>(mqttClient.returnCode()));
+  char tlsError[128] = {0};
+  const int tlsErrorCode = mqttTlsClient.lastError(tlsError, sizeof(tlsError));
+  Serial.printf("[DIAG] TLS error=%d%s%s\n", tlsErrorCode,
+    tlsErrorCode != 0 ? " - " : "", tlsErrorCode != 0 ? tlsError : "");
   if (!mqttClient.connected()) {
     Serial.println("[DIAG] The firmware retries the TLS/MQTT connection automatically.");
   }
