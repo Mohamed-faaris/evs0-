@@ -96,7 +96,7 @@ pnpm device:provision:mqtt
 pnpm device:provision:mqtt -- --port /dev/ttyUSB0
 ```
 
-The script sends the configuration to the connected ESP32 at 115200 baud. Firmware v1.1.0 supports verified MQTT-over-TLS connections using the saved broker credentials, automatic reconnect, retained state/availability messages, a retained Last Will, and MQ-135 telemetry publishing every 5 seconds. Serial commands include `mqtt status`, `mqtt diagnose`, and `mqtt reconnect`, plus `mqtt set-server`, `mqtt set-protocol`, `mqtt set-auth`, `mqtt clear-auth`, `mqtt enable`, and `mqtt disable`.
+The script sends the configuration to the connected ESP32 at 115200 baud. Firmware v1.1.1 supports verified MQTT-over-TLS connections using the saved broker credentials, automatic reconnect, retained state/availability messages, a retained Last Will, and MQ-135 telemetry publishing every 5 seconds using QoS 0. Serial commands include `mqtt status`, `mqtt diagnose`, and `mqtt reconnect`, plus `mqtt set-server`, `mqtt set-protocol`, `mqtt set-auth`, `mqtt clear-auth`, `mqtt enable`, and `mqtt disable`.
 
 ### Arduino IDE firmware dependency
 
@@ -141,7 +141,7 @@ The generated header defines `EMQX_ROOT_CA` in flash (`PROGMEM`) and is included
 
 **Security:** It is safe to commit this CA certificate and generated header. Never commit `.env`, MQTT passwords, Wi-Fi passwords, client private keys, or other credentials. The CA certificate is not a credential and does not replace MQTT username/password authentication.
 
-**Firmware status:** Firmware v1.1.0 includes the MQTT client implementation. It synchronizes time over NTP, validates the broker certificate using the embedded CA, authenticates with credentials stored in NVS, publishes telemetry/state/availability, and retries after connection loss. A successful build and live broker connection still need to be confirmed on the physical ESP32.
+**Firmware status:** Firmware v1.1.1 includes the MQTT client implementation. It synchronizes time over NTP, validates the broker certificate using the embedded CA, authenticates with credentials stored in NVS, publishes telemetry/state/availability, and retries after connection loss. A successful build and live broker connection still need to be confirmed on the physical ESP32.
 
 ## MQTT protocol
 
