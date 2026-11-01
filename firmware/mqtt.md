@@ -209,7 +209,7 @@ The ESP32 firmware defines a manually maintained `FIRMWARE_VERSION` and compiler
 
 ## TLS CA certificate
 
-The public CA certificate is stored at `firmware/certs/emqxsl-ca.crt` and generated into `firmware/cuspnode_mq135/emqx_ca.h` by running `./firmware/generate-ca-header.sh` from the repository root. The firmware includes this header, which defines `EMQX_ROOT_CA` in program memory. The supplied certificate identifies as DigiCert Global Root G2 and expires on 2038-01-15. Confirm that the live EMQX broker certificate chain terminates at this root before enabling TLS. The certificate is public trust material; do not put MQTT passwords or private keys in the repository.
+The public CA certificate is stored at `firmware/certs/emqxsl-ca.crt` and generated into `firmware/cuspnode_mq135/emqx_ca.h` by running `./firmware/generate-ca-header.sh` from the repository root. The firmware includes this header, which defines `EMQX_ROOT_CA` in program memory. It is DigiCert Global Root CA (not G2), the root EMQX documents for Serverless deployments. The certificate expires on 2031-11-10. The deployment Overview page's downloaded CA is authoritative if it differs. The certificate is public trust material; do not put MQTT passwords or private keys in the repository.
 
 The firmware uses `WiFiClientSecure` with `setCACert(EMQX_ROOT_CA)`. It does not call `setInsecure()`. It synchronizes UTC time with NTP before connecting, because certificate validity dates must be checked against a valid device clock. If TLS validation fails, inspect the Serial TLS error and download the CA certificate from the EMQX deployment Overview page if the broker's certificate chain has changed.
 
