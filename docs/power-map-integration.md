@@ -17,7 +17,7 @@ Browser
                       └── other published map resources
 ```
 
-The upstream frontend requests its own assets and data using relative paths (for example, `data/plants.json`, `data/live/now.json`, and `data/grid/index.json`). Serving the page under `/api/power-map/` keeps those requests on the EVS0 origin and avoids browser CORS requests to the Reclaim Chennai host.
+The upstream frontend requests its own assets and data using relative paths (for example, `data/plants.json`, `data/live/now.json`, and `data/grid/index.json`). Serving the page under `/api/power-map/` makes those URLs resolve against the configured API host, so the browser does not contact the Reclaim Chennai host directly. Because the iframe is sandboxed to an opaque origin, these resource reads are cross-origin from the iframe's perspective; the proxy returns permissive CORS headers for its public, unauthenticated GET/HEAD resources.
 
 The upstream repository also contains a FastAPI service with routes under `/api/` and `/geo/`. The proxy forwards matching paths when they are available in the configured deployment, e.g. `/api/power-map/api/coal/latest` maps to upstream `/api/coal/latest`. The public map's main renderer primarily consumes the published static JSON/GeoJSON files.
 
