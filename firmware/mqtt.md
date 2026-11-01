@@ -1,6 +1,6 @@
 # CuspNode MQTT Topic and Payload Specification
 
-This document defines the MQTT topic names and JSON payload structures for the EVS MQ-135 device. Firmware v1.1.0 implements MQTT 3.1.1 over verified TLS, authentication using ESP32 NVS credentials, automatic reconnect, Last Will availability, retained state, and periodic telemetry publishing.
+This document defines the MQTT topic names and JSON payload structures for the EVS MQ-135 device. Firmware v1.1.1 implements MQTT 3.1.1 over verified TLS, authentication using ESP32 NVS credentials, automatic reconnect, Last Will availability, retained state, and periodic telemetry publishing.
 
 ## Broker
 
@@ -225,7 +225,7 @@ Commands are reserved for a later firmware milestone. Do not accept arbitrary co
 | Command | 1 | No |
 | Command acknowledgement | 1 | No |
 
-Firmware v1.1.0 uses QoS 1 for telemetry, state, and online availability. QoS 1 can deliver duplicates, so consumers should tolerate repeated sequence numbers/message IDs. The offline Last Will is configured at QoS 1 with retain enabled.
+Firmware v1.1.1 uses QoS 0 for periodic telemetry to avoid blocking on PUBACK for best-effort sensor samples. State and availability use QoS 1 with retain enabled. Consumers should use the telemetry sequence number to identify gaps. QoS 1 can deliver duplicates, so consumers should tolerate repeated sequence numbers/message IDs. The offline Last Will is configured at QoS 1 with retain enabled.
 
 ## Security and operational notes
 
@@ -260,9 +260,9 @@ The firmware uses `WiFiClientSecure` with `setCACert(EMQX_ROOT_CA)`. It does not
 | MQTT broker settings in ESP32 NVS | Implemented (Serial CLI + TypeScript provisioner) |
 | CA certificate PEM and generated firmware header | Embedded; live TLS validation not yet exercised |
 | MQTT connection to configured broker | Implemented: MQTT 3.1.1 over verified TLS |
-| Telemetry publishing | Implemented: QoS 1 every 5 seconds |
+| Telemetry publishing | Implemented: QoS 0 every 5 seconds |
 | State publishing | Implemented: retained QoS 1 on state change/reconnect |
 | Availability / LWT | Implemented: retained QoS 1 online + offline Last Will |
 | Command subscription and acknowledgement | Reserved; not implemented |
 
-The firmware exposes local HTTP data at `/api/mq135` and live MQTT status at `/api/health`. MQTT broker settings are stored in ESP32 Preferences/NVS and can be provisioned using the Serial CLI or `pnpm device:provision:mqtt`. The firmware retries MQTT connections every 5 seconds. Use Serial `mqtt status` to inspect the actual session, `mqtt diagnose` to inspect DNS/TCP/NTP/TLS/MQTT status, and `mqtt reconnect` to force a new connection attempt.
+The firmware exposes local HTTP data at `/api/mq135` and live MQTT status at `/api/health`. MQTT broker settings are stored in ESP32 Preferences/NVS and can be provisioned using the Serial CLI or `pnpm device:provision:mqtt`. The firmware retries MQTT connections every 5 seconds. Telemetry publish failures now log the MQTT library error and free heap before reconnecting. Use Serial `mqtt status` to inspect the actual session, `mqtt diagnose` to inspect DNS/TCP/NTP/TLS/MQTT status, and `mqtt reconnect` to force a new connection attempt.
