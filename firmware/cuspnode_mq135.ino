@@ -1,7 +1,7 @@
 /*
  * CuspNode MQ-135 — ESP32 DevKit Arduino firmware
  * AP+STA Wi-Fi, NVS credential management, HTTP API, LED and Serial CLI.
- * MQTT is not enabled in this initial local-device milestone.
+ * MQTT broker settings are provisioned into NVS from the Serial CLI.
  */
 
 #include <Arduino.h>
@@ -46,6 +46,16 @@ Preferences preferences;
 struct WiFiEntry { String ssid; String password; };
 WiFiEntry networks[MAX_WIFI_NETWORKS];
 uint8_t networkCount = 0;
+
+struct MQTTConfig {
+  String host;
+  uint16_t port;
+  String protocol;
+  String username;
+  String password;
+  bool enabled;
+};
+MQTTConfig mqttConfig = {"", 8883, "mqtts", "", "", false};
 
 enum DeviceState : uint8_t {
   BOOTING, WIFI_SCANNING, WIFI_CONNECTING,
@@ -249,6 +259,60 @@ void listSavedNetworks() {
       (wifiConnected && connectedSSID == networks[i].ssid) ? " [CONNECTED]" : "");
   }
   Serial.println("Passwords are never displayed.");
+}
+
+// ---------------- NVS MQTT configuration ----------------
+
+void saveMQTTConfig() {
+  preferences.begin("cusp-mqtt", false);
+  preferences.putString("host", mqttConfig.host);
+  preferences.putUShort("port", mqttConfig.port);
+  preferences.putString("protocol", mqttConfig.protocol);
+  preferences.putString("username", mqttConfig.username);
+  preferences.putString("password", mqttConfig.password);
+  preferences.putBool("enabled", mqttConfig.enabled);
+  preferences.end();
+  Serial.println("[MQTT] Configuration saved to NVS.");
+}
+
+void loadMQTTConfig() {
+  preferences.begin("cusp-mqtt", true);
+  mqttConfig.host = preferences.getString("host", "");
+  mqttConfig.port = preferences.getUShort("port", 8883);
+  mqttConfig.protocol = preferences.getString("protocol", "mqtts");
+  mqttConfig.username = preferences.getString("username", "");
+  mqttConfig.password = preferences.getString("password", "");
+  mqttConfig.enabled = preferences.getBool("enabled", false);
+  preferences.end();
+}
+
+void printMQTTStatus() {
+  Serial.println("\\n--- MQTT configuration ---");
+  Serial.printf("Enabled  : %s\\n", mqttConfig.enabled ? "YES" : "NO");
+  Serial.printf("Host     : %s\\n", mqttConfig.host.isEmpty() ? "(not set)" : mqttConfig.host.c_str());
+  Serial.printf("Port     : %u\\n", mqttConfig.port);
+  Serial.printf("Protocol : %s\\n", mqttConfig.protocol.c_str());
+  Serial.printf("Username : %s\\n", mqttConfig.username.isEmpty() ? "(not set)" : "configured");
+  Serial.printf("Password : %s\\n", mqttConfig.password.isEmpty() ? "not set" : "configured");
+  Serial.println("Connection/publishing: not implemented in this firmware build.");
+}
+
+bool setMQTTServer(const String& host, const String& portText) {
+  String cleanHost = host;
+  cleanHost.trim();
+  long port = portText.toInt();
+  if (cleanHost.isEmpty() || cleanHost.length() > 253 || port < 1 || port > 65535) return false;
+  mqttConfig.host = cleanHost;
+  mqttConfig.port = static_cast<uint16_t>(port);
+  saveMQTTConfig();
+  return true;
+}
+
+bool setMQTTProtocol(const String& protocol) {
+  if (protocol != "mqtt" && protocol != "mqtts") return false;
+  mqttConfig.protocol = protocol;
+  saveMQTTConfig();
+  return true;
 }
 
 // ---------------- Wi-Fi manager ----------------
@@ -467,8 +531,11 @@ void handleHealth() {
   sensor["raw_adc"] = sensorADC;
   sensor["adc_voltage_v"] = adcVoltage;
 
-  doc["mqtt"]["configured"] = false;
+  doc["mqtt"]["configured"] = mqttConfig.enabled && !mqttConfig.host.isEmpty();
   doc["mqtt"]["connected"] = false;
+  doc["mqtt"]["host"] = mqttConfig.host;
+  doc["mqtt"]["port"] = mqttConfig.port;
+  doc["mqtt"]["protocol"] = mqttConfig.protocol;
 
   String output;
   serializeJson(doc, output);
@@ -608,6 +675,13 @@ wifi reconnect
 sensor
 sensor read
 ap status
+mqtt status
+mqtt set-server <HOST> <PORT>
+mqtt set-protocol <mqtt|mqtts>
+mqtt set-auth <USERNAME> <PASSWORD>
+mqtt clear-auth
+mqtt enable
+mqtt disable
 --------------------------------
 115200 baud; Serial Monitor line ending: Newline.
 Serial add command expects SSID without spaces.
@@ -658,6 +732,44 @@ void handleSerialCommand(String command) {
     Serial.printf("ADC=%d | ADC voltage=%.3f V | valid=%s\n",
       sensorADC, adcVoltage, sensorValid ? "yes" : "no");
   }
+  else if (command == "mqtt status") printMQTTStatus();
+  else if (command.startsWith("mqtt set-server ")) {
+    String args = command.substring(16);
+    int separator = args.indexOf(' ');
+    if (separator <= 0 || !setMQTTServer(args.substring(0, separator), args.substring(separator + 1)))
+      Serial.println("Usage: mqtt set-server <HOST> <PORT>");
+    else Serial.println("[MQTT] Broker endpoint updated.");
+  }
+  else if (command.startsWith("mqtt set-protocol ")) {
+    String protocol = command.substring(18);
+    protocol.trim();
+    Serial.println(setMQTTProtocol(protocol) ? "[MQTT] Protocol updated." : "Use mqtt or mqtts.");
+  }
+  else if (command.startsWith("mqtt set-auth ")) {
+    String args = command.substring(14);
+    int separator = args.indexOf(' ');
+    if (separator <= 0) Serial.println("Usage: mqtt set-auth <USERNAME> <PASSWORD>");
+    else {
+      mqttConfig.username = args.substring(0, separator);
+      mqttConfig.password = args.substring(separator + 1);
+      saveMQTTConfig();
+      Serial.println("[MQTT] Authentication updated. Secret values are not displayed.");
+    }
+  }
+  else if (command == "mqtt clear-auth") {
+    mqttConfig.username = "";
+    mqttConfig.password = "";
+    saveMQTTConfig();
+    Serial.println("[MQTT] Authentication cleared.");
+  }
+  else if (command == "mqtt enable" || command == "mqtt disable") {
+    if (command == "mqtt enable" && mqttConfig.host.isEmpty()) {
+      Serial.println("[MQTT] Set a broker first with mqtt set-server.");
+    } else {
+      mqttConfig.enabled = command == "mqtt enable";
+      saveMQTTConfig();
+    }
+  }
   else if (command == "ap status") {
     Serial.printf("SSID=%s | IP=%s | clients=%u\n",
       HOTSPOT_SSID, WiFi.softAPIP().toString().c_str(),
@@ -703,6 +815,7 @@ void setup() {
   Serial.println("\n[CUSPNODE] ESP32 MQ-135 starting");
 
   loadNetworks();
+  loadMQTTConfig();
 
   // AP+STA keeps the local management hotspot active while STA connects.
   WiFi.mode(WIFI_AP_STA);
