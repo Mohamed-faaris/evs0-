@@ -196,6 +196,33 @@ app.get("/api/power-meter/latest", (c) => {
   ) || null;
   return c.json({ data: latest });
 });
+
+const configuredGridEmissionFactor = Number(process.env.GRID_EMISSION_FACTOR_KG_CO2_PER_KWH || "0.675");
+const GRID_EMISSION_FACTOR_KG_CO2_PER_KWH =
+  Number.isFinite(configuredGridEmissionFactor) && configuredGridEmissionFactor > 0
+    ? configuredGridEmissionFactor
+    : 0.675;
+
+app.get("/api/power-meter/carbon", (c) => {
+  const latest = [...readings].reverse().find((reading) =>
+    reading.device_id === POWER_METER_DEVICE_ID && reading.device_type === "power_meter"
+  ) || null;
+  const energyKwh = latest?.readings?.energy_kwh;
+  return c.json({
+    data: {
+      device_id: POWER_METER_DEVICE_ID,
+      energy_kwh: typeof energyKwh === "number" && Number.isFinite(energyKwh) ? energyKwh : null,
+      emission_factor_kg_co2_per_kwh: GRID_EMISSION_FACTOR_KG_CO2_PER_KWH,
+      estimated_co2_kg: typeof energyKwh === "number" && Number.isFinite(energyKwh)
+        ? energyKwh * GRID_EMISSION_FACTOR_KG_CO2_PER_KWH
+        : null,
+      factor_fiscal_year: "FY2025-26",
+      factor_source: "Central Electricity Authority (CEA), CO2 Baseline Database v22.0",
+      factor_scope: "India national-grid weighted-average electricity factor; CO2 estimate only"
+    }
+  });
+});
+
 app.get("/api/power-meter/history", (c) => {
   const requestedLimit = Number(c.req.query("limit") || 100);
   const limit = Number.isFinite(requestedLimit) ? Math.min(Math.max(requestedLimit, 1), 1000) : 100;
