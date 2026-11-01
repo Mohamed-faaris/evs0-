@@ -1,6 +1,7 @@
 const http = require("node:http");
 const path = require("node:path");
 const { URL } = require("node:url");
+const { randomUUID } = require("node:crypto");
 const dotenv = require("dotenv");
 const { createMqttBridge } = require("./mqtt-client");
 
@@ -10,6 +11,7 @@ const HOST = process.env.HOST || "127.0.0.1";
 const PORT = Number(process.env.PORT || 3001);
 const DEVICE_ID = process.env.DEVICE_ID || "device-001";
 const POWER_METER_DEVICE_ID = process.env.POWER_METER_DEVICE_ID || "power-meter-001";
+const POWER_METER_SESSION_ID = randomUUID();
 const HOTSPOT_SSID = "cuspnode-mq135";
 const HOTSPOT_IP = "192.168.4.1";
 const MAX_WIFI_NETWORKS = 10;
@@ -105,6 +107,7 @@ function buildPowerMeterTelemetry() {
     device_id: POWER_METER_DEVICE_ID,
     device_type: "power_meter",
     meter_model: "single_phase_ac_mock",
+    session_id: POWER_METER_SESSION_ID,
     timestamp: new Date(now).toISOString(),
     uptime_seconds: Math.floor((now - powerMeterStartedAt) / 1000),
     sequence: powerMeterSequence,
@@ -127,6 +130,7 @@ function buildPowerMeterState() {
     schema_version: 1,
     device_id: POWER_METER_DEVICE_ID,
     device_type: "power_meter",
+    session_id: POWER_METER_SESSION_ID,
     state: "SIMULATED_ONLINE",
     uptime_seconds: Math.floor((Date.now() - powerMeterStartedAt) / 1000),
     meter: { model: "single_phase_ac_mock", valid: true },
