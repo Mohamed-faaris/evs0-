@@ -1,9 +1,14 @@
 {
-  "name": "cuspnode",
+  "name": "evs0-platform",
   "version": "1.0.0",
   "private": true,
+  "packageManager": "pnpm@10.20.0",
   "scripts": {
-    "dev": "pnpm --filter cuspnode-mock-server dev",
-    "start": "pnpm --filter cuspnode-mock-server start"
+    "dev": "pnpm --parallel --filter @evs0/api --filter @evs0/web dev",
+    "dev:api": "pnpm --filter @evs0/api dev",
+    "dev:web": "pnpm --filter @evs0/web dev",
+    "dev:mock": "pnpm --filter cuspnode-mock-server dev",
+    "start:mock": "pnpm --filter cuspnode-mock-server start",
+    "build": "pnpm -r build"
   }
 }
