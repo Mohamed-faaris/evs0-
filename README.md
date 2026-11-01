@@ -84,7 +84,7 @@ Set `POWER_MAP_UPSTREAM=https://power.reclaimchennai.city` in the repository-roo
 
 The upstream project also publishes FastAPI endpoints below `/api/`; requests to paths such as `/api/power-map/api/coal/latest` are passed through to the corresponding upstream `/api/coal/latest` route when that route is available in the deployed service. The embedded map itself primarily loads the upstream site's published static data under `/data/`.
 
-The upstream map uses third-party map tiles, glyphs, fonts, weather services and CDN-hosted libraries. Those are still requested from their providers and must support browser cross-origin access; the EVS0 proxy is specifically for the Reclaim Chennai origin. Attribution and source notes remain visible inside the embedded original UI. Upstream data can have different update intervals; the map guide explains freshness and limitations.
+The upstream map uses third-party map tiles, glyphs, fonts, weather services and CDN-hosted libraries. Those are still requested from their providers and must support browser cross-origin access; the EVS0 proxy is specifically for the Reclaim Chennai origin. The **Open full map** link redirects to the upstream host so the standalone map does not execute on the EVS0/API origin. Attribution and source notes remain visible inside the embedded original UI. Upstream data can have different update intervals; the map guide explains freshness and limitations.
 
 See [docs/power-map-integration.md](docs/power-map-integration.md) for route mapping, troubleshooting and attribution notes.
 
