@@ -9,6 +9,6 @@
     "dev:web": "pnpm --filter @evs0/web dev",
     "dev:mock": "pnpm --filter cuspnode-mock-server dev",
     "start:mock": "pnpm --filter cuspnode-mock-server start",
-    "build": "pnpm -r build"
+    "build": "pnpm --filter @evs0/api --filter @evs0/web build"
   }
 }
