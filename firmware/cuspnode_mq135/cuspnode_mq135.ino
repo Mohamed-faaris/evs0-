@@ -723,6 +723,7 @@ sensor
 sensor read
 ap status
 mqtt status
+mqtt diagnose
 mqtt set-server <HOST> <PORT>
 mqtt set-protocol <mqtt|mqtts>
 mqtt set-auth <USERNAME> <PASSWORD>
