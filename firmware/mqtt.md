@@ -1,6 +1,6 @@
 # CuspNode MQTT Topic and Payload Specification
 
-This document defines the MQTT topic names and JSON payload structures for the EVS MQ-135 device. It is a protocol specification; MQTT publishing/subscribing is not yet implemented in the current firmware.
+This document defines the MQTT topic names and JSON payload structures for the EVS MQ-135 device. It is a protocol specification; MQTT publishing/subscribing is not yet implemented in the current firmware. The firmware repository also includes the DigiCert Global Root G2 CA certificate as a PEM file and a generated Arduino header for a future TLS client.
 
 ## Broker
 
@@ -199,6 +199,12 @@ Use QoS 0 for high-frequency telemetry where occasional loss is acceptable, or Q
 - Use a unique `device_id` for every physical node before deploying multiple devices.
 - Synchronize time (for example, using NTP) before publishing UTC timestamps. Until time is available, send `timestamp: null` and retain `uptime_seconds`.
 
+## TLS CA certificate
+
+The public CA certificate is stored at `firmware/certs/emqxsl-ca.crt` and generated into `firmware/emqx_ca.h` by running `./firmware/generate-ca-header.sh` from the repository root. The firmware includes this header, which defines `EMQX_ROOT_CA` in program memory. The supplied certificate identifies as DigiCert Global Root G2 and expires on 2038-01-15. Confirm that the live EMQX broker certificate chain terminates at this root before enabling TLS. The certificate is public trust material; do not put MQTT passwords or private keys in the repository.
+
+**Important:** the CA header is embedded but not yet consumed by an MQTT TLS connection. The firmware does not currently instantiate `WiFiClientSecure`/PubSubClient, connect to the broker, or publish messages.
+
 ## Implementation status
 
 | Capability | Status |
@@ -210,4 +216,4 @@ Use QoS 0 for high-frequency telemetry where occasional loss is acceptable, or Q
 | Availability / LWT | Not implemented |
 | Command subscription and acknowledgement | Reserved; not implemented |
 
-The current firmware exposes local HTTP data at `/api/mq135`. MQTT broker settings can now be provisioned into ESP32 Preferences/NVS using the Serial CLI or `pnpm device:provision:mqtt`. The firmware does not yet open an MQTT connection or publish messages; implement transport only after the broker's TLS/CA and port requirements are confirmed.
+The current firmware exposes local HTTP data at `/api/mq135`. MQTT broker settings can be provisioned into ESP32 Preferences/NVS using the Serial CLI or `pnpm device:provision:mqtt`. A CA certificate is included for the future TLS transport, but the firmware does not yet open an MQTT connection or publish messages.
