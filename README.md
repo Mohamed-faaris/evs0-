@@ -63,15 +63,30 @@ pnpm start:mock
 - Orchestration: pnpm workspaces + Turborepo
 - Authentication: none; dashboard APIs are read-only
 
+The API also exposes a read-only same-origin proxy at `/api/power-map/*` for the Power Map of India. It forwards the upstream map page, relative JS/CSS/JSON/GeoJSON assets, and available API routes to `POWER_MAP_UPSTREAM` (default `https://power.reclaimchennai.city`). This keeps browser requests to the Power Map host same-origin and avoids CORS for those resources. Map tiles, glyphs, fonts, weather and CDN resources hosted by third parties remain direct requests to their respective providers.
+
 The API subscribes to telemetry, state, and availability topics under `MQTT_TOPIC_ROOT`. It keeps MQ-135 and power-meter readings separate and exposes `/api/power-meter/latest` and `/api/power-meter/history`. The mock server publishes two independent MQTT identities: `DEVICE_ID` (default `device-001`) and `POWER_METER_DEVICE_ID` (default `power-meter-001`). Both use the broker credentials from `.env`, but each has a distinct MQTT client ID.
 
 ## Dashboard pages
 
 1. **Live Monitoring** — device presence, MQ-135 ADC/voltage telemetry, and history chart.
 2. **Power Meter** — MQTT-simulated single-phase voltage, current, active/apparent/reactive power, power factor, frequency, energy, and load history.
-3. **AI Predictions** — model readiness and forecast status.
+3. **Power Map** — Reclaim Chennai's India power-station and transmission-grid map embedded as a dashboard tab.
+4. **AI Predictions** — model readiness and forecast status.
 
 The mock power meter sends synthetic single-phase electrical values through MQTT; it is not connected to a physical energy meter. Voltage/current/power/energy values are illustrative only. MQ-135 alone does not provide PM2.5, PM10, or official CPCB AQI. The UI intentionally does not fabricate these values. Prediction outputs remain unavailable until historical training data and a validated model are available.
+
+## Power Map integration
+
+The **Power Map** tab embeds the public Power Map of India by [Reclaim Chennai](https://github.com/reclaimchennai/power-map-india). EVS0 does not copy or fork its map renderer or data pipeline. The original frontend and published data are loaded through the read-only Hono proxy at `/api/power-map/`.
+
+Set `POWER_MAP_UPSTREAM=https://power.reclaimchennai.city` in the repository-root `.env` to select the upstream deployment. The browser iframe, its relative scripts/stylesheets, and map JSON/GeoJSON requests use the EVS0 origin; the Hono server fetches the upstream resources server-to-server. Only GET and HEAD are allowed, and the target host is configured by the server environment rather than by a user-supplied URL.
+
+The upstream project also publishes FastAPI endpoints below `/api/`; requests to paths such as `/api/power-map/api/coal/latest` are passed through to the corresponding upstream `/api/coal/latest` route when that route is available in the deployed service. The embedded map itself primarily loads the upstream site's published static data under `/data/`.
+
+The upstream map uses third-party map tiles, glyphs, fonts, weather services and CDN-hosted libraries. Those are still requested from their providers and must support browser cross-origin access; the EVS0 proxy is specifically for the Reclaim Chennai origin. Attribution and source notes remain visible inside the embedded original UI. Upstream data can have different update intervals; the map guide explains freshness and limitations.
+
+See [docs/power-map-integration.md](docs/power-map-integration.md) for route mapping, troubleshooting and attribution notes.
 
 ## Current limitations
 
