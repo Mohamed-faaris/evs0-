@@ -1,6 +1,11 @@
 
 const http = require("node:http");
+const path = require("node:path");
 const { URL } = require("node:url");
+const dotenv = require("dotenv");
+
+// Always load the repository-root .env, regardless of the current working directory.
+dotenv.config({ path: path.resolve(__dirname, "../.env") });
 
 const HOST = process.env.HOST || "127.0.0.1";
 const PORT = Number(process.env.PORT || 3001);
