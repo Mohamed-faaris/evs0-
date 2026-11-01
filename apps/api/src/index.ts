@@ -1,10 +1,10 @@
 import dotenv from "dotenv";
 import path from "node:path";
 import { serve } from "@hono/node-server";
+import { Hono } from "hono";
+import mqtt, { type MqttClient } from "mqtt";
 
 dotenv.config({ path: path.resolve(process.cwd(), "../../.env") });
-import { Hono } from "hono";
-import mqtt from "mqtt";
 
 type Telemetry = {
   schema_version?: number;
@@ -23,73 +23,167 @@ type Telemetry = {
   received_at: string;
 };
 
-type DeviceState = Record<string, unknown> & { device_id: string };
+type DeviceState = {
+  schema_version?: number;
+  device_id: string;
+  state?: string;
+  uptime_seconds?: number;
+  network?: { wifi_connected?: boolean; wifi_ssid?: string; hotspot_active?: boolean };
+  sensor?: { model?: string; valid?: boolean };
+  mqtt?: { connected?: boolean };
+};
+type Availability = { device_id: string; status: "online" | "offline"; received_at: string };
+type TopicKind = "telemetry" | "state" | "availability";
+
 const readings: Telemetry[] = [];
 const states = new Map<string, DeviceState>();
-const availability = new Map<string, { status: string; received_at: string }>();
+const availability = new Map<string, Availability>();
 const MAX_READINGS = 5000;
+let mqttConnected = false;
 
-function parseJson<T>(payload: Buffer): T | null {
-  try { return JSON.parse(payload.toString("utf8")) as T; } catch { return null; }
+function parseJson(payload: Buffer): Record<string, unknown> | null {
+  try {
+    const value: unknown = JSON.parse(payload.toString("utf8"));
+    return value && typeof value === "object" && !Array.isArray(value)
+      ? value as Record<string, unknown>
+      : null;
+  } catch {
+    return null;
+  }
 }
 
-const mqttUrl = process.env.MQTT_URL;
+function resolveMqttUrl(): string | undefined {
+  const override = process.env.MQTT_URL?.trim();
+  if (override) return override;
+
+  const protocol = (process.env.MQTT_PROTOCOL || "mqtts").trim();
+  const host = (process.env.MQTT_HOST || "evs.mqtt.cusptech.dev").trim();
+  const port = process.env.MQTT_PORT?.trim();
+  const path = process.env.MQTT_PATH?.trim();
+  if (!["mqtts", "wss"].includes(protocol)) {
+    throw new Error("MQTT_PROTOCOL must be mqtts or wss.");
+  }
+  if (!host) throw new Error("MQTT_HOST is required when MQTT_URL is not set.");
+  const url = new URL(protocol + "://" + host);
+  if (port) url.port = port;
+  if (protocol === "wss" && path) url.pathname = path.startsWith("/") ? path : "/" + path;
+  return url.toString();
+}
+
+function parseTopic(topic: string, topicRoot: string): { deviceId: string; kind: TopicKind } | null {
+  const prefix = topicRoot.replace(/^\\/+|\\/+$/g, "");
+  const parts = topic.split("/");
+  const rootParts = prefix.split("/");
+  if (parts.length !== rootParts.length + 2) return null;
+  if (!rootParts.every((part, index) => parts[index] === part)) return null;
+  const deviceId = parts[rootParts.length];
+  const kind = parts[rootParts.length + 1] as TopicKind;
+  if (!/^[a-zA-Z0-9_-]{1,64}$/.test(deviceId)) return null;
+  if (!["telemetry", "state", "availability"].includes(kind)) return null;
+  return { deviceId, kind };
+}
+
+const topicRoot = (process.env.MQTT_TOPIC_ROOT || "evs/v1/devices").replace(/^\\/+|\\/+$/g, "");
+const mqttUrl = resolveMqttUrl();
+let mqttClient: MqttClient | undefined;
+
 if (mqttUrl) {
-  const client = mqtt.connect(mqttUrl, {
-    username: process.env.MQTT_USERNAME,
-    password: process.env.MQTT_PASSWORD,
+  mqttClient = mqtt.connect(mqttUrl, {
+    username: process.env.MQTT_USERNAME || undefined,
+    password: process.env.MQTT_PASSWORD || undefined,
     clientId: process.env.MQTT_CLIENT_ID || "evs0-dashboard-api",
-    reconnectPeriod: 3000,
-    clean: true
+    reconnectPeriod: Number(process.env.MQTT_RECONNECT_PERIOD_MS || 3000),
+    keepalive: Number(process.env.MQTT_KEEPALIVE_SECONDS || 60),
+    clean: (process.env.MQTT_CLEAN_SESSION || "true").toLowerCase() === "true",
+    rejectUnauthorized: true
   });
-  client.on("connect", () => {
-    console.log("[MQTT] Connected");
-    client.subscribe("evs/v1/devices/+/telemetry");
-    client.subscribe("evs/v1/devices/+/state");
-    client.subscribe("evs/v1/devices/+/availability");
+
+  mqttClient.on("connect", () => {
+    mqttConnected = true;
+    console.log("[MQTT] Connected to " + mqttUrl);
+    const subscriptions = [
+      topicRoot + "/+/telemetry",
+      topicRoot + "/+/state",
+      topicRoot + "/+/availability"
+    ];
+    mqttClient?.subscribe(subscriptions, { qos: 1 }, (error) => {
+      if (error) console.error("[MQTT] Subscription failed:", error.message);
+      else console.log("[MQTT] Subscribed:", subscriptions.join(", "));
+    });
   });
-  client.on("message", (topic, payload) => {
-    const parts = topic.split("/");
-    const deviceId = parts[3];
-    if (!deviceId) return;
-    const data = parseJson<Record<string, unknown>>(payload);
-    if (!data) return;
+
+  mqttClient.on("reconnect", () => { mqttConnected = false; console.log("[MQTT] Reconnecting..."); });
+  mqttClient.on("offline", () => { mqttConnected = false; console.warn("[MQTT] Offline"); });
+  mqttClient.on("close", () => { mqttConnected = false; });
+  mqttClient.on("error", (error) => console.error("[MQTT]", error.message));
+
+  mqttClient.on("message", (topic, payload) => {
+    const parsedTopic = parseTopic(topic, topicRoot);
+    if (!parsedTopic) return;
+    const { deviceId, kind } = parsedTopic;
     const received_at = new Date().toISOString();
-    if (parts[4] === "telemetry") {
-      const item = { ...data, device_id: String(data.device_id || deviceId), received_at } as Telemetry;
+
+    // Empty retained messages delete the broker's retained value.
+    if (payload.length === 0) {
+      if (kind === "state") states.delete(deviceId);
+      if (kind === "availability") availability.delete(deviceId);
+      return;
+    }
+
+    const data = parseJson(payload);
+    if (!data) { console.warn("[MQTT] Ignoring invalid JSON on", topic); return; }
+    if (typeof data.device_id !== "string" || data.device_id !== deviceId) {
+      console.warn("[MQTT] Ignoring device_id mismatch on", topic);
+      return;
+    }
+
+    if (kind === "telemetry") {
+      if (data.schema_version !== 1 || !data.readings || typeof data.readings !== "object") {
+        console.warn("[MQTT] Ignoring telemetry with unsupported schema on", topic);
+        return;
+      }
+      const item = { ...data, received_at } as unknown as Telemetry;
       readings.push(item);
       if (readings.length > MAX_READINGS) readings.shift();
-    } else if (parts[4] === "state") {
-      states.set(deviceId, { ...data, device_id: deviceId });
-    } else if (parts[4] === "availability") {
-      availability.set(deviceId, { status: String(data.status || "unknown"), received_at });
+    } else if (kind === "state") {
+      states.set(deviceId, data as unknown as DeviceState);
+    } else if (kind === "availability") {
+      if (data.status !== "online" && data.status !== "offline") {
+        console.warn("[MQTT] Ignoring invalid availability status on", topic);
+        return;
+      }
+      availability.set(deviceId, { device_id: deviceId, status: data.status, received_at });
     }
   });
-  client.on("error", (error) => console.error("[MQTT]", error.message));
 } else {
-  console.warn("[MQTT] MQTT_URL is not configured; API is running without broker data.");
+  console.warn("[MQTT] Not configured. Set MQTT_HOST/MQTT_PROTOCOL/MQTT_PORT or MQTT_URL in the repository-root .env.");
 }
 
 const app = new Hono();
-app.get("/api/health", (c) => c.json({ status: "ok", mqtt_configured: Boolean(mqttUrl), devices_seen: new Set(readings.map(r => r.device_id)).size }));
+app.get("/api/health", (c) => c.json({
+  status: "ok",
+  mqtt: { configured: Boolean(mqttUrl), connected: mqttConnected, topic_root: topicRoot },
+  devices_seen: new Set(readings.map((reading) => reading.device_id)).size
+}));
 app.get("/api/devices", (c) => {
-  const ids = new Set([...readings.map(r => r.device_id), ...states.keys(), ...availability.keys()]);
-  return c.json([...ids].map(device_id => ({
+  const ids = new Set([...readings.map((reading) => reading.device_id), ...states.keys(), ...availability.keys()]);
+  return c.json([...ids].map((device_id) => ({
     device_id,
     state: states.get(device_id) || null,
     availability: availability.get(device_id) || null,
-    latest: [...readings].reverse().find(r => r.device_id === device_id) || null
+    latest: [...readings].reverse().find((reading) => reading.device_id === device_id) || null
   })));
 });
 app.get("/api/readings/latest", (c) => {
   const deviceId = c.req.query("device_id");
-  const latest = [...readings].reverse().find(r => !deviceId || r.device_id === deviceId) || null;
+  const latest = [...readings].reverse().find((reading) => !deviceId || reading.device_id === deviceId) || null;
   return c.json({ data: latest });
 });
 app.get("/api/readings/history", (c) => {
   const deviceId = c.req.query("device_id");
-  const limit = Math.min(Math.max(Number(c.req.query("limit") || 100), 1), 1000);
-  const data = readings.filter(r => !deviceId || r.device_id === deviceId).slice(-limit);
+  const requestedLimit = Number(c.req.query("limit") || 100);
+  const limit = Number.isFinite(requestedLimit) ? Math.min(Math.max(requestedLimit, 1), 1000) : 100;
+  const data = readings.filter((reading) => !deviceId || reading.device_id === deviceId).slice(-limit);
   return c.json({ data });
 });
 app.get("/api/aqi/current", (c) => c.json({
@@ -103,6 +197,6 @@ app.get("/api/aqi/predictions", (c) => c.json({
 app.get("/", (c) => c.json({ name: "EVS0 Dashboard API", docs: ["/api/health", "/api/devices", "/api/readings/latest", "/api/readings/history", "/api/aqi/current", "/api/aqi/predictions"] }));
 
 const port = Number(process.env.API_PORT || 3002);
-serve({ fetch: app.fetch, port, hostname: process.env.API_HOST || "0.0.0.0" }, info => {
-  console.log(`[API] Hono listening on http://localhost:${info.port}`);
+serve({ fetch: app.fetch, port, hostname: process.env.API_HOST || "0.0.0.0" }, (info) => {
+  console.log("[API] Hono listening on http://localhost:" + info.port);
 });
