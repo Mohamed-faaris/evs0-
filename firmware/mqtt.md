@@ -204,10 +204,10 @@ Use QoS 0 for high-frequency telemetry where occasional loss is acceptable, or Q
 | Capability | Status |
 |---|---|
 | Topic and payload specification | Documented here |
-| MQTT connection to `evs.mqtt.cusptech.dev` | Not implemented |
+| MQTT broker settings in ESP32 NVS | Implemented (Serial CLI + TypeScript provisioner) |\n| MQTT connection to `evs.mqtt.cusptech.dev` | Not implemented |
 | Telemetry publishing | Not implemented |
 | State publishing | Not implemented |
 | Availability / LWT | Not implemented |
 | Command subscription and acknowledgement | Reserved; not implemented |
 
-The current firmware exposes local HTTP data at `/api/mq135`. The MQTT implementation should map those sensor readings into the telemetry schema above without inventing ppm values.
+The current firmware exposes local HTTP data at `/api/mq135`. MQTT broker settings can now be provisioned into ESP32 Preferences/NVS using the Serial CLI or `pnpm device:provision:mqtt`. The firmware does not yet open an MQTT connection or publish messages; implement transport only after the broker's TLS/CA and port requirements are confirmed.
