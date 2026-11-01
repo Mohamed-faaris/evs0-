@@ -69,13 +69,23 @@ The API subscribes to telemetry, state, and availability topics under `MQTT_TOPI
 
 ## Dashboard pages
 
-1. **Live Monitoring** — device presence, MQ-135 ADC/voltage telemetry, and history chart.
-2. **Power Meter** — MQTT-simulated single-phase voltage, current, active/apparent/reactive power, power factor, frequency, energy, and load history.
-3. **Power Map** — Reclaim Chennai's India power-station and transmission-grid map embedded as a dashboard tab.
-4. **AI Predictions** — model readiness and forecast status.
+1. **Air Quality** — MQ-135 ADC/voltage telemetry, sensor status, and raw signal history. Official CPCB AQI remains unavailable until calibrated pollutant sensors are installed.
+2. **AQI Predictions** — readiness and requirements for a future validated AQI model. Predictions are intentionally unavailable while the current sensor inputs are insufficient.
+3. **Energy & Carbon** — mock/physical power-meter voltage, current, active/apparent/reactive power, power factor, frequency, energy, load history, and a location-based electricity CO₂ estimate.
+4. **Energy Forecast** — transparent baseline projections for 24-hour, 7-day, and 30-day energy use and associated grid CO₂, extrapolated from the recent mean active power. This is not an AI/ML prediction.
+5. **Power Map** — Reclaim Chennai's India power-station and transmission-grid map in its own independent tab.
 
-The mock power meter sends synthetic single-phase electrical values through MQTT; it is not connected to a physical energy meter. Voltage/current/power/energy values are illustrative only. MQ-135 alone does not provide PM2.5, PM10, or official CPCB AQI. The UI intentionally does not fabricate these values. Prediction outputs remain unavailable until historical training data and a validated model are available.
+The mock power meter sends synthetic single-phase electrical values through MQTT; it is not connected to a physical energy meter. Voltage/current/power/energy values are illustrative only. The mock energy counter resets when the mock process restarts.
 
+### Electricity carbon estimate
+
+Estimated CO₂ (kg) = metered energy (kWh) × grid emission factor (kg CO₂/kWh).
+
+The default factor is 0.675 kg CO₂/kWh, the FY2025-26 all-India weighted-average grid factor from CEA CO₂ Baseline Database v22.0. Configure GRID_EMISSION_FACTOR_KG_CO2_PER_KWH in the repository-root .env when using a different documented factor. This is a location-based CO₂ estimate, not an offset, avoided-emissions claim, carbon credit, or full lifecycle CO₂e assessment. For the mock device, the estimate covers energy accumulated since the current mock process started.
+
+The energy forecast extrapolates the arithmetic mean of the latest retained active-power samples. It assumes the recent load stays constant over the forecast horizon and should be treated as an indicative baseline only. No trained energy-forecast model is currently deployed.
+
+The app does not fabricate official AQI or AQI predictions from the MQ-135. MQ-135 alone does not provide PM2.5, PM10, or official CPCB AQI. AQI prediction requires calibrated pollutant measurements, historical training data, and a validated model.
 ## Power Map integration
 
 The **Power Map** tab embeds the public Power Map of India by [Reclaim Chennai](https://github.com/reclaimchennai/power-map-india). EVS0 does not copy or fork its map renderer or data pipeline. The original frontend and published data are loaded through the read-only Hono proxy at `/api/power-map/`.
