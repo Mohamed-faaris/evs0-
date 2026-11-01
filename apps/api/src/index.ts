@@ -187,7 +187,7 @@ app.get("/api/devices", (c) => {
 });
 app.get("/api/readings/latest", (c) => {
   const deviceId = c.req.query("device_id");
-  const latest = [...readings].reverse().find((reading) => !deviceId || reading.device_id === deviceId) || null;
+  const latest = [...readings].reverse().find((reading) => reading.device_type !== "power_meter" && (!deviceId || reading.device_id === deviceId)) || null;
   return c.json({ data: latest });
 });
 app.get("/api/power-meter/latest", (c) => {
@@ -208,7 +208,7 @@ app.get("/api/readings/history", (c) => {
   const deviceId = c.req.query("device_id");
   const requestedLimit = Number(c.req.query("limit") || 100);
   const limit = Number.isFinite(requestedLimit) ? Math.min(Math.max(requestedLimit, 1), 1000) : 100;
-  const data = readings.filter((reading) => !deviceId || reading.device_id === deviceId).slice(-limit);
+  const data = readings.filter((reading) => reading.device_type !== "power_meter" && (!deviceId || reading.device_id === deviceId)).slice(-limit);
   return c.json({ data });
 });
 app.get("/api/aqi/current", (c) => c.json({
