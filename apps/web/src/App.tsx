@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Activity, BrainCircuit, Wind, Radio, Gauge, RefreshCw, Wifi, WifiOff,
   Zap, Map, Leaf, TrendingUp, Clock
@@ -38,6 +38,8 @@ type Device = {
   latest?: Reading | null;
 };
 type CarbonSummary = {
+  available?: boolean;
+  reason?: string | null;
   data?: {
     device_id: string;
     energy_kwh: number | null;
@@ -46,6 +48,8 @@ type CarbonSummary = {
     factor_fiscal_year: string;
     factor_source: string;
     factor_scope: string;
+    last_received_at?: string | null;
+    session_id?: string | null;
   };
 };
 
@@ -91,44 +95,68 @@ export default function App() {
   const [apiOnline, setApiOnline] = useState(false);
   const [updated, setUpdated] = useState("");
   const [loading, setLoading] = useState(false);
+  const refreshRunId = useRef(0);
 
   async function refresh() {
+    const runId = ++refreshRunId.current;
     setLoading(true);
+    const fetchOptional = async <T,>(url: string): Promise<T | null> => {
+      try {
+        const response = await fetch(API + url);
+        return response.ok ? await response.json() as T : null;
+      } catch {
+        return null;
+      }
+    };
+
     try {
-      const responses = await Promise.all([
+      // Core telemetry controls the API status. Carbon and model endpoints are
+      // optional so staggered deployments cannot suppress ordinary monitoring.
+      const coreResponses = await Promise.all([
         fetch(API + "/api/readings/latest"),
         fetch(API + "/api/readings/history?limit=100"),
         fetch(API + "/api/devices"),
         fetch(API + "/api/power-meter/latest"),
-        fetch(API + "/api/power-meter/history?limit=100"),
-        fetch(API + "/api/power-meter/carbon"),
-        fetch(API + "/api/aqi/response-forecast"),
-        fetch(API + "/api/power-meter/forecast")
+        fetch(API + "/api/power-meter/history?limit=100")
       ]);
-      if (!responses.every((response) => response.ok)) throw new Error("API request failed");
-      const [latest, hist, dev, powerLatest, powerHistory, carbon, sensorModel, energyModel] =
-        await Promise.all(responses.map((response) => response.json()));
+      if (!coreResponses.every((response) => response.ok)) throw new Error("Core API request failed");
+
+      const [latest, hist, dev, powerLatest, powerHistory] =
+        await Promise.all(coreResponses.map((response) => response.json()));
+
+      const [carbon, sensorModel, energyModel] = await Promise.all([
+        fetchOptional<CarbonSummary>("/api/power-meter/carbon"),
+        fetchOptional<SensorResponseForecast>("/api/aqi/response-forecast"),
+        fetchOptional<EnergyForecast>("/api/power-meter/forecast")
+      ]);
+
+      // Ignore older poll results if a newer manual or scheduled refresh started.
+      if (runId !== refreshRunId.current) return;
+
       setReading(latest.data || null);
       setHistory(hist.data || []);
       setDevices(dev || []);
       setPowerMeterReading(powerLatest.data || null);
       setPowerMeterHistory(powerHistory.data || []);
-      setCarbonSummary(carbon || null);
-      setSensorForecast(sensorModel || null);
-      setEnergyForecast(energyModel || null);
+      setCarbonSummary(carbon);
+      setSensorForecast(sensorModel);
+      setEnergyForecast(energyModel);
       setApiOnline(true);
       setUpdated(new Date().toLocaleTimeString());
     } catch {
-      setApiOnline(false);
+      if (runId === refreshRunId.current) setApiOnline(false);
     } finally {
-      setLoading(false);
+      if (runId === refreshRunId.current) setLoading(false);
     }
   }
 
   useEffect(() => {
     void refresh();
     const id = setInterval(() => void refresh(), 3000);
-    return () => clearInterval(id);
+    return () => {
+      clearInterval(id);
+      refreshRunId.current += 1;
+    };
   }, []);
 
   const chartData = useMemo(() => history.map((r) => ({
@@ -149,10 +177,8 @@ export default function App() {
   const sensor = reading?.readings;
   const power = powerMeterReading?.readings;
   const emissionFactor = carbonSummary?.data?.emission_factor_kg_co2_per_kwh ?? 0.675;
-  const sessionEnergyKwh = carbonSummary?.data?.energy_kwh ?? power?.energy_kwh ?? null;
-  const sessionCarbonKg = carbonSummary?.data?.estimated_co2_kg ?? (
-    sessionEnergyKwh == null ? null : sessionEnergyKwh * emissionFactor
-  );
+  const sessionEnergyKwh = carbonSummary?.available ? carbonSummary.data?.energy_kwh ?? null : null;
+  const sessionCarbonKg = carbonSummary?.available ? carbonSummary.data?.estimated_co2_kg ?? null : null;
 
   return <main className="shell">
     <header className="topbar">
@@ -289,12 +315,15 @@ export default function App() {
           <article className="carbon-detail">
             <div><span>Meter energy</span><strong>{sessionEnergyKwh == null ? "—" : fmt(sessionEnergyKwh, 4) + " kWh"}</strong></div>
             <div><span>Grid factor</span><strong>{fmt(emissionFactor, 3)} kg CO₂/kWh</strong></div>
-            <div><span>Factor period</span><strong>{carbonSummary?.data?.factor_fiscal_year || "FY2025-26"}</strong></div>
+            <div><span>Factor period</span><strong>{carbonSummary?.data?.factor_fiscal_year || "—"}</strong></div>
+            <div><span>Factor source</span><strong>{carbonSummary?.data?.factor_source || "Not available"}</strong></div>
             <div><span>Calculation</span><strong>kWh × grid factor</strong></div>
           </article>
         </div>
         <p className="carbon-note">This is an estimate of emissions associated with grid electricity use. It is not a carbon-offset claim, avoided-emissions claim, or verified carbon credit. The mock meter's energy counter resets when its process restarts.</p>
-        <p className="carbon-source">Factor source: Central Electricity Authority, CO₂ Baseline Database v22.0, FY2025-26 weighted-average India grid factor. <a href="https://cea.nic.in/cdm-co2-baseline-database/?lang=en" target="_blank" rel="noreferrer">CEA source</a>.</p>
+        <p className="carbon-source">Factor source: {carbonSummary?.data?.factor_source || "Not available"} · {carbonSummary?.data?.factor_scope || "Scope not supplied"}.</p>
+        {carbonSummary?.data?.factor_source?.startsWith("Central Electricity Authority") ? <p className="carbon-source"><a href="https://cea.nic.in/cdm-co2-baseline-database/?lang=en" target="_blank" rel="noreferrer">CEA CO₂ Baseline Database</a></p> : null}
+        {!carbonSummary?.available ? <p className="carbon-note">{carbonSummary?.reason || "Waiting for current, valid power-meter data. Carbon estimates are hidden until the meter is online and its current session has published a valid reading."}</p> : null}
       </section>
       <div className="sourcefoot">POWER SOURCE: MQTT · {powerMeterReading?.device_id || POWER_METER_DEVICE_ID} · {powerMeterReading ? "RECEIVED " + new Date(powerMeterReading.received_at).toLocaleString() : "NO METER READINGS RECEIVED"}</div>
     </section> : tab === "energy-predictions" ? <section className="content">
