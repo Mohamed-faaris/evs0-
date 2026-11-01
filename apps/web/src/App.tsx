@@ -198,13 +198,13 @@ export default function App() {
     </section> : tab === "power-map" ? <section className="content power-map-content">
       <div className="sectionhead">
         <div><div className="eyebrow">INDIA ELECTRICITY INFRASTRUCTURE</div><h2>Power Map of India</h2></div>
-        <a className="power-map-open" href="/api/power-map/" target="_blank" rel="noreferrer">Open full map <Map size={14}/></a>
+        <a className="power-map-open" href={API + "/api/power-map/"} target="_blank" rel="noreferrer">Open full map <Map size={14}/></a>
       </div>
       <div className="power-map-attribution">
         <span>POWER MAP OF INDIA · RECLAIM CHENNAI</span>
         <span>Live map and published data are served through the EVS0 same-origin proxy.</span>
       </div>
-      <iframe className="power-map-frame" src="/api/power-map/" title="Power Map of India by Reclaim Chennai" loading="lazy" referrerPolicy="strict-origin-when-cross-origin" />
+      <iframe className="power-map-frame" src={API + "/api/power-map/"} title="Power Map of India by Reclaim Chennai" loading="lazy" referrerPolicy="strict-origin-when-cross-origin" sandbox="allow-scripts allow-forms allow-popups" />
     </section> : <section className="content">
       <div className="sectionhead"><div><div className="eyebrow">FORECAST ENGINE</div><h2>AI predictions</h2></div><span className="status muted"><i/> MODEL NOT CONFIGURED</span></div>
       <article className="prediction"><div className="predictionicon"><BrainCircuit size={26}/></div><div><h3>Forecasting is not available yet</h3><p>The dashboard will show 1-hour, 6-hour, and 24-hour forecasts after sufficient historical pollutant data has been collected and a model has been trained and validated.</p><div className="requirements"><span>01 / HISTORICAL DATA</span><span>02 / CALIBRATED PM SENSORS</span><span>03 / VALIDATED MODEL</span></div></div></article>
