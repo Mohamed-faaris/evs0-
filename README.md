@@ -107,9 +107,10 @@ Repository files:
 firmware/
 ├── certs/
 │   └── emqxsl-ca.crt
-├── emqx_ca.h                 # generated; included by the .ino
 ├── generate-ca-header.sh
-└── cuspnode_mq135.ino
+└── cuspnode_mq135/           # Arduino IDE sketch folder
+    ├── cuspnode_mq135.ino
+    └── emqx_ca.h             # generated; included by the sketch
 ```
 
 The committed `firmware/certs/emqxsl-ca.crt` is the DigiCert Global Root G2 CA certificate (self-signed, valid through 2038-01-15). It is public trust material, not a private key or MQTT credential. It is suitable only if the EMQX broker's presented certificate chain validates to this root. If EMQX changes its certificate chain, replace the PEM with the CA certificate from the deployment console and regenerate the header.
@@ -121,7 +122,7 @@ chmod +x firmware/generate-ca-header.sh
 ./firmware/generate-ca-header.sh
 ```
 
-The generated header defines `EMQX_ROOT_CA` in flash (`PROGMEM`) and is included by `cuspnode_mq135.ino`. Re-run the generator whenever the PEM file changes, then compile and flash the firmware again.
+The generated header defines `EMQX_ROOT_CA` in flash (`PROGMEM`) and is included by `firmware/cuspnode_mq135/cuspnode_mq135.ino`. Open that `.ino` file directly in Arduino IDE; the sketch folder and `.ino` filename intentionally match. Re-run the generator whenever the PEM file changes, then compile and flash the firmware again.
 
 **Security:** It is safe to commit this CA certificate and generated header. Never commit `.env`, MQTT passwords, Wi-Fi passwords, client private keys, or other credentials. The CA certificate is not a credential and does not replace MQTT username/password authentication.
 
