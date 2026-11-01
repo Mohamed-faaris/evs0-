@@ -1,18 +1,18 @@
 # CuspNode MQTT Topic and Payload Specification
 
-This document defines the MQTT topic names and JSON payload structures for the EVS MQ-135 device. It is a protocol specification; MQTT publishing/subscribing is not yet implemented in the current firmware. The firmware repository also includes the DigiCert Global Root G2 CA certificate as a PEM file and a generated Arduino header for a future TLS client.
+This document defines the MQTT topic names and JSON payload structures for the EVS MQ-135 device. Firmware v1.1.0 implements MQTT 3.1.1 over verified TLS, authentication using ESP32 NVS credentials, automatic reconnect, Last Will availability, retained state, and periodic telemetry publishing.
 
 ## Broker
 
 | Setting | Value |
 |---|---|
-| Hostname | `evs.mqtt.cusptech.dev` |
+| Hostname | Configured in ESP32 NVS (current test deployment: `c1a1d217.ala.us-east-1.emqxsl.com`) |
 | Device ID | `device-001` (current firmware default; make unique per physical device) |
 | Topic root | `evs/v1/devices/{device_id}` |
 | Payload format | JSON, UTF-8 |
-| Transport | MQTT over TLS/WSS as configured by the broker |
+| Transport | MQTT over TLS (`mqtts`) |
 
-The exact port, WebSocket path, TLS certificate validation, authentication method, and credentials must match the broker deployment. Do not put broker passwords or tokens in this repository.
+The current test deployment uses TLS TCP port `8883`. EMQX Serverless supports MQTT over TLS on port 8883; WebSocket TLS on 8084 is not implemented in this firmware. Credentials are provisioned to ESP32 NVS and must not be committed to this repository.
 
 ## Topic layout
 
@@ -112,7 +112,7 @@ Recommended state values:
 - `NO_WIFI`
 - `SENSOR_ERROR`
 
-Publish state when a meaningful state or relevant status field changes. The current firmware's LED state enum does not yet include MQTT connection states.
+Publish state when a meaningful state or relevant status field changes. The firmware publishes state when the device state changes and after each successful MQTT reconnect.
 
 ### Availability / Last Will
 
@@ -186,7 +186,7 @@ Commands are reserved for a later firmware milestone. Do not accept arbitrary co
 | Command | 1 | No |
 | Command acknowledgement | 1 | No |
 
-Use QoS 0 for high-frequency telemetry where occasional loss is acceptable, or QoS 1 when delivery confirmation is more important. QoS 1 can deliver duplicates, so consumers should tolerate repeated sequence numbers/message IDs.
+Firmware v1.1.0 uses QoS 1 for telemetry, state, and online availability. QoS 1 can deliver duplicates, so consumers should tolerate repeated sequence numbers/message IDs. The offline Last Will is configured at QoS 1 with retain enabled.
 
 ## Security and operational notes
 
@@ -199,6 +199,10 @@ Use QoS 0 for high-frequency telemetry where occasional loss is acceptable, or Q
 - Use a unique `device_id` for every physical node before deploying multiple devices.
 - Synchronize time (for example, using NTP) before publishing UTC timestamps. Until time is available, send `timestamp: null` and retain `uptime_seconds`.
 
+## Firmware library dependency
+
+Install **MQTT** by Joel Gaehwiler (256dpi), version **2.5.3**, through Arduino IDE Library Manager. The ESP32 board package supplies `WiFiClientSecure` and the NTP/time functions. ArduinoJson is also required by the existing HTTP API and MQTT JSON payloads.
+
 ## Firmware metadata
 
 The ESP32 firmware defines a manually maintained `FIRMWARE_VERSION` and compiler-generated `FIRMWARE_BUILD_DATE`/`FIRMWARE_BUILD_TIME` values. They are printed at startup and in Serial status output, and exposed by `GET /api/health` as `firmware.version`, `firmware.build_date`, and `firmware.build_time`. The build timestamp represents compile time, not the exact flash/upload time.
@@ -207,7 +211,7 @@ The ESP32 firmware defines a manually maintained `FIRMWARE_VERSION` and compiler
 
 The public CA certificate is stored at `firmware/certs/emqxsl-ca.crt` and generated into `firmware/cuspnode_mq135/emqx_ca.h` by running `./firmware/generate-ca-header.sh` from the repository root. The firmware includes this header, which defines `EMQX_ROOT_CA` in program memory. The supplied certificate identifies as DigiCert Global Root G2 and expires on 2038-01-15. Confirm that the live EMQX broker certificate chain terminates at this root before enabling TLS. The certificate is public trust material; do not put MQTT passwords or private keys in the repository.
 
-**Important:** the CA header is embedded but not yet consumed by an MQTT TLS connection. The firmware does not currently instantiate `WiFiClientSecure`/PubSubClient, connect to the broker, or publish messages.
+The firmware uses `WiFiClientSecure` with `setCACert(EMQX_ROOT_CA)`. It does not call `setInsecure()`. It synchronizes UTC time with NTP before connecting, because certificate validity dates must be checked against a valid device clock. If TLS validation fails, inspect the Serial TLS error and download the CA certificate from the EMQX deployment Overview page if the broker's certificate chain has changed.
 
 ## Implementation status
 
@@ -216,10 +220,10 @@ The public CA certificate is stored at `firmware/certs/emqxsl-ca.crt` and genera
 | Topic and payload specification | Documented here |
 | MQTT broker settings in ESP32 NVS | Implemented (Serial CLI + TypeScript provisioner) |
 | CA certificate PEM and generated firmware header | Embedded; live TLS validation not yet exercised |
-| MQTT connection to configured broker | Not implemented |
-| Telemetry publishing | Not implemented |
-| State publishing | Not implemented |
-| Availability / LWT | Not implemented |
+| MQTT connection to configured broker | Implemented: MQTT 3.1.1 over verified TLS |
+| Telemetry publishing | Implemented: QoS 1 every 5 seconds |
+| State publishing | Implemented: retained QoS 1 on state change/reconnect |
+| Availability / LWT | Implemented: retained QoS 1 online + offline Last Will |
 | Command subscription and acknowledgement | Reserved; not implemented |
 
-The current firmware exposes local HTTP data at `/api/mq135`. MQTT broker settings can be provisioned into ESP32 Preferences/NVS using the Serial CLI or `pnpm device:provision:mqtt`. A CA certificate is included for the future TLS transport, but the firmware does not yet open an MQTT connection or publish messages.
+The firmware exposes local HTTP data at `/api/mq135` and live MQTT status at `/api/health`. MQTT broker settings are stored in ESP32 Preferences/NVS and can be provisioned using the Serial CLI or `pnpm device:provision:mqtt`. The firmware retries MQTT connections every 5 seconds. Use Serial `mqtt status` to inspect the actual session, `mqtt diagnose` to inspect DNS/TCP/NTP/TLS/MQTT status, and `mqtt reconnect` to force a new connection attempt.
