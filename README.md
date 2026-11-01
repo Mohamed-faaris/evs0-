@@ -70,9 +70,9 @@ The API subscribes to telemetry, state, and availability topics under `MQTT_TOPI
 ## Dashboard pages
 
 1. **Air Quality** — MQ-135 ADC/voltage telemetry, sensor status, and raw signal history. Official CPCB AQI remains unavailable until calibrated pollutant sensors are installed.
-2. **AQI Predictions** — readiness and requirements for a future validated AQI model. Predictions are intentionally unavailable while the current sensor inputs are insufficient.
+2. **AQI Predictions** — official AQI forecasts remain unavailable until calibrated pollutant sensors and a validated model exist. A separate simple exponential-smoothing (SES) baseline estimates the next MQ-135 raw ADC response for sensor-drift monitoring; it is not an AQI prediction.
 3. **Energy & Carbon** — mock/physical power-meter voltage, current, active/apparent/reactive power, power factor, frequency, energy, load history, and a location-based electricity CO₂ estimate.
-4. **Energy Forecast** — transparent baseline projections for 24-hour, 7-day, and 30-day energy use and associated grid CO₂, extrapolated from the recent mean active power. This is not an AI/ML prediction.
+4. **Energy Forecast** — transparent 24-hour, 7-day, and 30-day energy-use and grid-CO₂ projections from a simple exponential-smoothing (SES) model over recent active-power samples. This is a statistical baseline, not a trained AI/ML prediction.
 5. **Power Map** — Reclaim Chennai's India power-station and transmission-grid map in its own independent tab.
 
 The mock power meter sends synthetic single-phase electrical values through MQTT; it is not connected to a physical energy meter. Voltage/current/power/energy values are illustrative only. The mock energy counter resets when the mock process restarts.
@@ -83,7 +83,15 @@ Estimated CO₂ (kg) = metered energy (kWh) × grid emission factor (kg CO₂/kW
 
 The default factor is 0.675 kg CO₂/kWh, the FY2025-26 all-India weighted-average grid factor from CEA CO₂ Baseline Database v22.0. Configure GRID_EMISSION_FACTOR_KG_CO2_PER_KWH in the repository-root .env when using a different documented factor. This is a location-based CO₂ estimate, not an offset, avoided-emissions claim, carbon credit, or full lifecycle CO₂e assessment. For the mock device, the estimate covers energy accumulated since the current mock process started.
 
-The energy forecast extrapolates the arithmetic mean of the latest retained active-power samples. It assumes the recent load stays constant over the forecast horizon and should be treated as an indicative baseline only. No trained energy-forecast model is currently deployed.
+### Lightweight forecasting models
+
+The API offers two simple exponential-smoothing (SES) baselines:
+- `GET /api/aqi/response-forecast` estimates the next MQ-135 raw ADC response. It is for sensor-response smoothing and drift monitoring only; it does not output AQI, PM2.5, PM10, or pollutant concentrations.
+- `GET /api/power-meter/forecast` smooths recent active-power readings and projects a flat load over 24 hours, 7 days, and 30 days, including the associated grid-CO₂ estimates.
+
+Configure `SENSOR_FORECAST_ALPHA` and `ENERGY_FORECAST_ALPHA` (default `0.25`, valid range greater than 0 through 1), `FORECAST_MIN_SAMPLES` (default `10`), and `FORECAST_WINDOW_SAMPLES` (default `120`) in the root `.env`. Higher alpha values react faster to recent readings; lower values smooth more strongly. Forecasts are unavailable until the configured minimum sample count is reached. These are statistical baselines, not trained AI/ML models. The API's in-memory reading history is cleared when the API restarts.
+
+
 
 The app does not fabricate official AQI or AQI predictions from the MQ-135. MQ-135 alone does not provide PM2.5, PM10, or official CPCB AQI. AQI prediction requires calibrated pollutant measurements, historical training data, and a validated model.
 ## Power Map integration
