@@ -425,7 +425,7 @@ void printStatus() {
   Serial.printf("MQ-135 ADC      : %d\n", sensorADC);
   Serial.printf("ADC voltage     : %.3f V\n", adcVoltage);
   Serial.printf("Estimated AO    : %.3f V\n", estimatedModuleAOVoltage);
-  Serial.printf("MQTT            : NOT CONFIGURED\n");
+  Serial.printf("MQTT            : %s\n", mqttConfig.enabled && !mqttConfig.host.isEmpty() ? "CONFIGURED (connection not implemented)" : "NOT CONFIGURED");
   Serial.printf("Saved Wi-Fi     : %u/%u\n", networkCount, MAX_WIFI_NETWORKS);
   Serial.println("=====================================\n");
 }
@@ -692,7 +692,8 @@ Passwords are never printed.
 void handleSerialCommand(String command) {
   command.trim();
   if (command.isEmpty()) return;
-  Serial.printf("[CLI] %s\n", command.c_str());
+  if (command.startsWith("mqtt set-auth ")) Serial.println("[CLI] mqtt set-auth [REDACTED]");
+  else Serial.printf("[CLI] %s\n", command.c_str());
 
   if (command == "help") printHelp();
   else if (command == "status") printStatus();
