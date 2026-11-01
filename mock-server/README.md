@@ -1,6 +1,6 @@
 # CuspNode Node.js Mock Server
 
-A simulated ESP32 MQ-135 device with a real MQTT client. Use it to exercise the broker and dashboard data flow without a physical ESP32 or MQ-135.
+A simulated ESP32 MQ-135 device and simulated single-phase power meter, both using real MQTT clients. Use them to exercise the broker and dashboard data flow without physical sensor hardware.
 
 ## Requirements
 
@@ -30,9 +30,12 @@ MQTT_USERNAME=your_emqx_username
 MQTT_PASSWORD=your_emqx_password
 MQTT_TOPIC_ROOT=evs/v1/devices
 DEVICE_ID=device-001
+POWER_METER_DEVICE_ID=power-meter-001
 
 MQTT_MOCK_CLIENT_ID=cuspnode-mock-device-001
 MQTT_PUBLISH_INTERVAL_MS=5000
+MQTT_POWER_METER_CLIENT_ID=cuspnode-mock-power-meter-001
+MQTT_POWER_METER_PUBLISH_INTERVAL_MS=5000
 MQTT_RECONNECT_PERIOD_MS=3000
 MQTT_KEEPALIVE_SECONDS=60
 MQTT_CLEAN_SESSION=true
@@ -65,7 +68,7 @@ Set `HOST=0.0.0.0` only when you need to access the HTTP mock page from another 
 
 The mock server uses MQTT.js and connects to the configured broker over TLS when `MQTT_PROTOCOL=mqtts`.
 
-For `device-001`, it uses these topics:
+For the MQ-135 simulator (`device-001` by default), it uses these topics:
 
 | Direction | Topic | QoS | Retained |
 |---|---|---:|---:|
@@ -82,6 +85,16 @@ For `device-001`, it uses these topics:
 - Reconnects automatically after transient broker/network failures.
 - Uses a separate client ID (`cuspnode-mock-device-001` by default) so it does not collide with the physical ESP32 client ID.
 
+The power-meter simulator runs as a second MQTT client and publishes under its own device identity:
+
+| Direction | Topic | QoS | Retained |
+|---|---|---:|---:|
+| Publish | `evs/v1/devices/power-meter-001/telemetry` | 1 | No |
+| Publish | `evs/v1/devices/power-meter-001/state` | 1 | Yes |
+| Publish / LWT | `evs/v1/devices/power-meter-001/availability` | 1 | Yes |
+
+Its payload includes `voltage_v`, `current_a`, `active_power_w`, `apparent_power_va`, `reactive_power_var`, `power_factor`, `frequency_hz`, and `energy_kwh`. Values are generated from deterministic time-varying formulas; energy is integrated from simulated active power while the process runs. It uses a distinct client ID (`cuspnode-mock-power-meter-001`) and a separate publish interval. The broker ACL must allow the same MQTT username to publish/retain these power-meter topics as well.
+
 Make sure the EMQX authorization rules allow the configured username to publish to its device's telemetry, state, availability and command acknowledgement topics, and subscribe to its command topic. Authentication alone does not grant topic permissions.
 
 ## HTTP endpoints
@@ -91,7 +104,7 @@ Make sure the EMQX authorization rules allow the configured username to publish 
 | GET | `/` | Mock device portal |
 | GET | `/api/health` | Simulated device status plus real MQTT connection status |
 | GET | `/api/mq135` | Simulated MQ-135 reading |
-| GET | `/api/mqtt` | MQTT configuration, connection and topic status |
+| GET | `/api/mqtt` | MQTT configuration, connection and topic status for both mock devices |
 | GET | `/api/wifi` | Saved mock Wi-Fi SSIDs |
 | GET | `/api/wifi/scan` | Simulated nearby Wi-Fi networks |
 | POST | `/api/wifi/add` | Add/update a mock saved network |
@@ -105,7 +118,7 @@ curl http://127.0.0.1:3001/api/mqtt
 
 ## Mock limitations
 
-- Sensor values are generated demo data, not physical measurements. PPM remains `null`; no gas concentration calibration is implemented.
+- MQ-135 and power-meter values are generated demo data, not physical measurements. The power meter is a synthetic single-phase load model, not revenue-grade or safety-grade instrumentation. PPM remains `null`; no gas concentration calibration is implemented.
 - Wi-Fi, hotspot IP and client counts are simulated. The server does not connect to a router or an ESP32.
 - Saved Wi-Fi entries are in memory and reset when the mock server restarts. Passwords are not returned by the HTTP API.
 - MQTT is a real broker connection when configured. An MQTT connected status confirms the broker session, not the accuracy of the simulated sensor data.
