@@ -30,7 +30,7 @@ let wifiConnected = true;
 let connectedSSID = "faaris";
 let sensorSequence = 0;
 let powerMeterSequence = 0;
-let powerEnergyKwh = 17.624;
+let powerEnergyKwh = 0;
 let lastPowerSampleAt = startedAt;
 const powerMeterStartedAt = Date.now();
 const uptimeSeconds = () => Math.floor((Date.now() - startedAt) / 1000);
