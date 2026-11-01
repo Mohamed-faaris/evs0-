@@ -25,3 +25,40 @@
 .power-map-frame{display:block;width:100%;height:calc(100dvh - 255px);min-height:680px;border:2px solid #1f2229;background:#f4f1ea;box-shadow:3px 3px 0 #1f2229}
 @media(max-width:821px){.power-map-frame{height:calc(100dvh - 275px);min-height:620px}.power-map-attribution{align-items:flex-start;flex-direction:column;gap:4px}}
 @media(max-width:500px){.power-map-frame{height:calc(100dvh - 300px);min-height:560px}}
+
+/* Separate environmental monitoring and energy/carbon views. */
+.dashboard-tabs{flex-wrap:wrap}
+.dashboard-tabs button{white-space:nowrap}
+.carbon-block{margin-top:28px;padding:20px;background:#f8f7f2;border:2px solid #1f2229;box-shadow:3px 3px 0 #1f2229}
+.carbon-block .sectionhead h2{display:flex;align-items:center;gap:8px}
+.carbon-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+.carbon-primary,.carbon-detail{padding:20px;background:#fff;border:2px solid #1f2229}
+.carbon-primary{background:#f1f7f3}
+.carbon-value{font-size:clamp(32px,4vw,48px);font-weight:800;letter-spacing:-2px;margin:18px 0 8px}
+.carbon-value small{font-size:14px;letter-spacing:0}
+.carbon-primary p,.carbon-note,.carbon-source{font-size:11px;line-height:1.7;color:#5c6270}
+.carbon-primary p{margin:0}
+.carbon-detail{display:flex;flex-direction:column;justify-content:center}
+.carbon-detail div{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:12px 0;border-bottom:1px solid #e7e2d6;font-size:11px}
+.carbon-detail div:last-child{border-bottom:0}
+.carbon-detail span{color:#5c6270}
+.carbon-detail strong{text-align:right}
+.carbon-note{margin:14px 0 4px}
+.carbon-source{margin:0}
+.carbon-source a{color:#875900;font-weight:700}
+.forecast-assumption{display:flex;align-items:center;gap:8px;margin:18px 0 12px;padding:12px 14px;background:#f3efe6;border:1px solid #d9d3c5;font-size:11px;color:#5c6270}
+.forecast-assumption strong{color:#1b1d22}
+.energy-forecast-metrics{grid-template-columns:repeat(3,minmax(0,1fr))}
+.forecast-empty{margin-top:15px;background:#fff}
+@media(max-width:821px){.carbon-block{padding:14px}.carbon-grid{grid-template-columns:1fr}.energy-forecast-metrics{grid-template-columns:1fr}}
+
+/* Simple statistical model output panels. */
+.model-prediction{margin-top:16px}
+.model-copy{flex:1;min-width:0}
+.model-copy>p{font-size:12px;line-height:1.7;color:#5c6270;max-width:800px}
+.model-metrics{grid-template-columns:repeat(3,minmax(0,1fr));margin:16px 0 8px}
+.model-metrics .metric{min-height:100px;padding:13px}
+.model-metrics .metricvalue{font-size:27px;margin:10px 0 0}
+.model-meta{font-size:9px;letter-spacing:.65px;color:#777;font-weight:800;margin-top:10px}
+.model-wait{margin-top:14px;padding:12px 14px;background:#f3efe6;border:1px solid #d9d3c5;color:#5c6270;font-size:11px;line-height:1.6}
+@media(max-width:821px){.model-metrics{grid-template-columns:1fr}.dashboard-tabs{overflow-x:auto;flex-wrap:nowrap}.dashboard-tabs button{flex:none}}

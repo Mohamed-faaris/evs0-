@@ -69,13 +69,31 @@ The API subscribes to telemetry, state, and availability topics under `MQTT_TOPI
 
 ## Dashboard pages
 
-1. **Live Monitoring** — device presence, MQ-135 ADC/voltage telemetry, and history chart.
-2. **Power Meter** — MQTT-simulated single-phase voltage, current, active/apparent/reactive power, power factor, frequency, energy, and load history.
-3. **Power Map** — Reclaim Chennai's India power-station and transmission-grid map embedded as a dashboard tab.
-4. **AI Predictions** — model readiness and forecast status.
+1. **Air Quality** — MQ-135 ADC/voltage telemetry, sensor status, and raw signal history. Official CPCB AQI remains unavailable until calibrated pollutant sensors are installed.
+2. **AQI Predictions** — official AQI forecasts remain unavailable until calibrated pollutant sensors and a validated model exist. A separate simple exponential-smoothing (SES) baseline estimates the next MQ-135 raw ADC response for sensor-drift monitoring; it is not an AQI prediction.
+3. **Energy & Carbon** — mock/physical power-meter voltage, current, active/apparent/reactive power, power factor, frequency, energy, load history, and a location-based electricity CO₂ estimate.
+4. **Energy Forecast** — transparent 24-hour, 7-day, and 30-day energy-use and grid-CO₂ projections from a simple exponential-smoothing (SES) model over recent active-power samples. This is a statistical baseline, not a trained AI/ML prediction.
+5. **Power Map** — Reclaim Chennai's India power-station and transmission-grid map in its own independent tab.
 
-The mock power meter sends synthetic single-phase electrical values through MQTT; it is not connected to a physical energy meter. Voltage/current/power/energy values are illustrative only. MQ-135 alone does not provide PM2.5, PM10, or official CPCB AQI. The UI intentionally does not fabricate these values. Prediction outputs remain unavailable until historical training data and a validated model are available.
+The mock power meter sends synthetic single-phase electrical values through MQTT; it is not connected to a physical energy meter. Voltage/current/power/energy values are illustrative only. The mock energy counter resets when the mock process restarts.
 
+### Electricity carbon estimate
+
+Estimated CO₂ (kg) = metered energy (kWh) × grid emission factor (kg CO₂/kWh).
+
+The default factor is 0.675 kg CO₂/kWh, the FY2025-26 all-India weighted-average grid factor from CEA CO₂ Baseline Database v22.0. Configure GRID_EMISSION_FACTOR_KG_CO2_PER_KWH in the repository-root .env when using a different documented factor. The API rejects a non-finite or non-positive configured factor instead of silently replacing it. When a non-default factor is configured, set GRID_EMISSION_FACTOR_SOURCE, GRID_EMISSION_FACTOR_FISCAL_YEAR, and GRID_EMISSION_FACTOR_SCOPE; otherwise the API labels the provenance as custom and does not attribute it to CEA. This is a location-based CO₂ estimate, not an offset, avoided-emissions claim, carbon credit, or full lifecycle CO₂e assessment. For the mock device, the estimate covers energy accumulated since the current mock process started.
+
+### Lightweight forecasting models
+
+The API offers two simple exponential-smoothing (SES) baselines:
+- `GET /api/aqi/response-forecast` estimates the next MQ-135 raw ADC response. It is for sensor-response smoothing and drift monitoring only; it does not output AQI, PM2.5, PM10, or pollutant concentrations.
+- `GET /api/power-meter/forecast` smooths recent active-power readings and projects a flat load over 24 hours, 7 days, and 30 days, including the associated grid-CO₂ estimates.
+
+Configure `SENSOR_FORECAST_ALPHA` and `ENERGY_FORECAST_ALPHA` (default `0.25`, valid range greater than 0 through 1), `FORECAST_MIN_SAMPLES` (default `10`), and `FORECAST_WINDOW_SAMPLES` (default `120`) in the root `.env`. Higher alpha values react faster to recent readings; lower values smooth more strongly. Forecasts are unavailable until the configured minimum sample count is reached. These are statistical baselines, not trained AI/ML models. The API's in-memory reading history is cleared when the API restarts. Power-meter readings include a mock-process session ID; the API only returns estimates for the current session while MQTT availability is online and the latest sample is fresh. Configure POWER_METER_MAX_AGE_SECONDS (default 20 seconds) to adjust the freshness window. Redelivered samples are deduplicated by session and sequence before smoothing.
+
+
+
+The app does not fabricate official AQI or AQI predictions from the MQ-135. MQ-135 alone does not provide PM2.5, PM10, or official CPCB AQI. AQI prediction requires calibrated pollutant measurements, historical training data, and a validated model.
 ## Power Map integration
 
 The **Power Map** tab embeds the public Power Map of India by [Reclaim Chennai](https://github.com/reclaimchennai/power-map-india). EVS0 does not copy or fork its map renderer or data pipeline. The original frontend and published data are loaded through the read-only Hono proxy at `/api/power-map/`.

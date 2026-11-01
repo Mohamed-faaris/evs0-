@@ -1,5 +1,8 @@
-import { useEffect, useMemo, useState } from "react";
-import { Activity, BrainCircuit, Wind, Radio, Gauge, RefreshCw, Wifi, WifiOff, Zap, Map } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import {
+  Activity, BrainCircuit, Wind, Radio, Gauge, RefreshCw, Wifi, WifiOff,
+  Zap, Map, Leaf, TrendingUp, Clock
+} from "lucide-react";
 import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 
 type Readings = {
@@ -34,52 +37,126 @@ type Device = {
   availability?: { status: string; received_at: string } | null;
   latest?: Reading | null;
 };
+type CarbonSummary = {
+  available?: boolean;
+  reason?: string | null;
+  data?: {
+    device_id: string;
+    energy_kwh: number | null;
+    emission_factor_kg_co2_per_kwh: number;
+    estimated_co2_kg: number | null;
+    factor_fiscal_year: string;
+    factor_source: string;
+    factor_scope: string;
+    last_received_at?: string | null;
+    session_id?: string | null;
+  };
+};
+
+type ForecastModel = { name: string; version?: string; alpha: number; samples: number };
+type SensorResponseForecast = {
+  available: boolean;
+  reason?: string;
+  target?: string;
+  model: ForecastModel;
+  data?: { latest_raw_adc: number; smoothed_raw_adc: number; next_reading_estimate_adc: number };
+  note?: string;
+};
+type EnergyForecast = {
+  available: boolean;
+  reason?: string;
+  model: ForecastModel;
+  data?: {
+    smoothed_active_power_w: number;
+    projections: {
+      next_24_hours: { energy_kwh: number; estimated_co2_kg: number };
+      next_7_days: { energy_kwh: number; estimated_co2_kg: number };
+      next_30_days: { energy_kwh: number; estimated_co2_kg: number };
+    };
+  };
+  note?: string;
+};
+type Tab = "air-quality" | "aqi-predictions" | "energy" | "energy-predictions" | "power-map";
 
 const API = import.meta.env.VITE_API_BASE || "";
 const POWER_METER_DEVICE_ID = import.meta.env.VITE_POWER_METER_DEVICE_ID || "power-meter-001";
-const fmt = (n?: number, digits = 2) => n == null || !Number.isFinite(n) ? "—" : n.toFixed(digits);
+const fmt = (n?: number | null, digits = 2) => n == null || !Number.isFinite(n) ? "—" : n.toFixed(digits);
 
 export default function App() {
-  const [tab, setTab] = useState<"live" | "power-map" | "predictions">("live");
+  const [tab, setTab] = useState<Tab>("air-quality");
   const [reading, setReading] = useState<Reading | null>(null);
   const [history, setHistory] = useState<Reading[]>([]);
   const [powerMeterReading, setPowerMeterReading] = useState<Reading | null>(null);
   const [powerMeterHistory, setPowerMeterHistory] = useState<Reading[]>([]);
+  const [carbonSummary, setCarbonSummary] = useState<CarbonSummary | null>(null);
+  const [sensorForecast, setSensorForecast] = useState<SensorResponseForecast | null>(null);
+  const [energyForecast, setEnergyForecast] = useState<EnergyForecast | null>(null);
   const [devices, setDevices] = useState<Device[]>([]);
   const [apiOnline, setApiOnline] = useState(false);
   const [updated, setUpdated] = useState("");
   const [loading, setLoading] = useState(false);
+  const refreshRunId = useRef(0);
 
   async function refresh() {
+    const runId = ++refreshRunId.current;
     setLoading(true);
+    const fetchOptional = async <T,>(url: string): Promise<T | null> => {
+      try {
+        const response = await fetch(API + url);
+        return response.ok ? await response.json() as T : null;
+      } catch {
+        return null;
+      }
+    };
+
     try {
-      const responses = await Promise.all([
+      // Core telemetry controls the API status. Carbon and model endpoints are
+      // optional so staggered deployments cannot suppress ordinary monitoring.
+      const coreResponses = await Promise.all([
         fetch(API + "/api/readings/latest"),
         fetch(API + "/api/readings/history?limit=100"),
         fetch(API + "/api/devices"),
         fetch(API + "/api/power-meter/latest"),
         fetch(API + "/api/power-meter/history?limit=100")
       ]);
-      if (!responses.every((response) => response.ok)) throw new Error("API request failed");
-      const [latest, hist, dev, powerLatest, powerHistory] = await Promise.all(responses.map((response) => response.json()));
+      if (!coreResponses.every((response) => response.ok)) throw new Error("Core API request failed");
+
+      const [latest, hist, dev, powerLatest, powerHistory] =
+        await Promise.all(coreResponses.map((response) => response.json()));
+
+      const [carbon, sensorModel, energyModel] = await Promise.all([
+        fetchOptional<CarbonSummary>("/api/power-meter/carbon"),
+        fetchOptional<SensorResponseForecast>("/api/aqi/response-forecast"),
+        fetchOptional<EnergyForecast>("/api/power-meter/forecast")
+      ]);
+
+      // Ignore older poll results if a newer manual or scheduled refresh started.
+      if (runId !== refreshRunId.current) return;
+
       setReading(latest.data || null);
       setHistory(hist.data || []);
       setDevices(dev || []);
       setPowerMeterReading(powerLatest.data || null);
       setPowerMeterHistory(powerHistory.data || []);
+      setCarbonSummary(carbon);
+      setSensorForecast(sensorModel);
+      setEnergyForecast(energyModel);
       setApiOnline(true);
       setUpdated(new Date().toLocaleTimeString());
     } catch {
-      setApiOnline(false);
+      if (runId === refreshRunId.current) setApiOnline(false);
     } finally {
-      setLoading(false);
+      if (runId === refreshRunId.current) setLoading(false);
     }
   }
 
   useEffect(() => {
     void refresh();
     const id = setInterval(() => void refresh(), 3000);
-    return () => clearInterval(id);
+    return () => {
+      clearInterval(id);
+      refreshRunId.current += 1;
+    };
   }, []);
 
   const chartData = useMemo(() => history.map((r) => ({
@@ -92,11 +169,16 @@ export default function App() {
     activePower: r.readings?.active_power_w ?? null
   })), [powerMeterHistory]);
 
-  const sensorOnline = devices.some((d) => d.device_id !== POWER_METER_DEVICE_ID && d.availability?.status === "online");
-  const powerMeterNode = devices.find((d) => d.device_id === POWER_METER_DEVICE_ID);
+
+  const sensorDevices = devices.filter((device) => device.device_id !== POWER_METER_DEVICE_ID);
+  const sensorOnline = sensorDevices.some((device) => device.availability?.status === "online");
+  const powerMeterNode = devices.find((device) => device.device_id === POWER_METER_DEVICE_ID);
   const powerMeterOnline = powerMeterNode?.availability?.status === "online";
   const sensor = reading?.readings;
   const power = powerMeterReading?.readings;
+  const emissionFactor = carbonSummary?.data?.emission_factor_kg_co2_per_kwh ?? 0.675;
+  const sessionEnergyKwh = carbonSummary?.available ? carbonSummary.data?.energy_kwh ?? null : null;
+  const sessionCarbonKg = carbonSummary?.available ? carbonSummary.data?.estimated_co2_kg ?? null : null;
 
   return <main className="shell">
     <header className="topbar">
@@ -108,19 +190,25 @@ export default function App() {
     </header>
 
     <section className="intro">
-      <div><div className="eyebrow">ENVIRONMENTAL INTELLIGENCE / TRICHY</div><h1>Air Quality <em>Dashboard</em></h1><p>Live environmental telemetry and simulated electrical metering.</p></div>
+      <div>
+        <div className="eyebrow">ENVIRONMENTAL INTELLIGENCE / TRICHY</div>
+        <h1>Environmental <em>Dashboard</em></h1>
+        <p>Air-quality monitoring, electricity telemetry and estimated grid emissions.</p>
+      </div>
       <div className="updated">LAST SYNC <strong>{updated || "Waiting for data"}</strong></div>
     </section>
 
-    <nav className="tabs">
-      <button className={tab === "live" ? "active" : ""} onClick={() => setTab("live")}><Activity size={16}/> Live Monitoring</button>
+    <nav className="tabs dashboard-tabs" aria-label="Dashboard sections">
+      <button className={tab === "air-quality" ? "active" : ""} onClick={() => setTab("air-quality")}><Wind size={16}/> Air Quality</button>
+      <button className={tab === "aqi-predictions" ? "active" : ""} onClick={() => setTab("aqi-predictions")}><BrainCircuit size={16}/> AQI Predictions</button>
+      <button className={tab === "energy" ? "active" : ""} onClick={() => setTab("energy")}><Zap size={16}/> Energy & Carbon</button>
+      <button className={tab === "energy-predictions" ? "active" : ""} onClick={() => setTab("energy-predictions")}><TrendingUp size={16}/> Energy Forecast</button>
       <button className={tab === "power-map" ? "active" : ""} onClick={() => setTab("power-map")}><Map size={16}/> Power Map</button>
-      <button className={tab === "predictions" ? "active" : ""} onClick={() => setTab("predictions")}><BrainCircuit size={16}/> AI Predictions</button>
     </nav>
 
-    {tab === "live" ? <section className="content">
-      <div className="sectionhead"><div><div className="eyebrow">LIVE TELEMETRY</div><h2>Sensor overview</h2></div><span className="livepill"><i/> AUTO REFRESH · 3 SEC</span></div>
-      <div className="notice"><strong>AQI NOT AVAILABLE</strong><span>MQ-135 provides a broad gas-response signal. It cannot independently produce official CPCB AQI or PM2.5/PM10 values.</span></div>
+    {tab === "air-quality" ? <section className="content">
+      <div className="sectionhead"><div><div className="eyebrow">AIR QUALITY MONITORING</div><h2>Sensor overview</h2></div><span className="livepill"><i/> AUTO REFRESH · 3 SEC</span></div>
+      <div className="notice"><strong>OFFICIAL AQI UNAVAILABLE</strong><span>MQ-135 provides a broad gas-response signal. It cannot independently calculate CPCB AQI or PM2.5/PM10 concentrations.</span></div>
 
       <div className="metrics">
         <article className="metric heroMetric"><div className="metriclabel"><Gauge size={16}/> OFFICIAL AQI</div><div className="metricvalue">—</div><div className="metricfoot">Requires calibrated pollutant sensors</div><div className="metricbar"><span/></div></article>
@@ -140,62 +228,125 @@ export default function App() {
         </article>
 
         <article className="panel">
-          <div className="panelhead"><div><div className="eyebrow">DEVICE STATUS</div><h3>Connected nodes</h3></div><Radio size={18}/></div>
-          {devices.length ? devices.map((d) => {
-            const isPowerMeter = d.device_id === POWER_METER_DEVICE_ID;
-            const label = isPowerMeter ? "MOCK POWER METER" : (d.latest?.sensor || "ENVIRONMENT SENSOR");
-            const detail = isPowerMeter
-              ? (d.latest?.valid ? "Electrical telemetry valid" : "No valid meter reading")
-              : (d.latest?.valid ? "Sensor valid" : "No valid reading");
-            return <div className="device" key={d.device_id}>
-              <div className="deviceicon">{isPowerMeter ? <Zap size={18}/> : <Radio size={18}/>}</div>
-              <div className="deviceinfo"><strong>{d.device_id}</strong><small>{label} · {detail}</small></div>
-              <span className={d.availability?.status === "online" ? "status good" : "status muted"}><i/>{d.availability?.status || "UNKNOWN"}</span>
-            </div>;
-          }) : <div className="empty">No devices have published telemetry yet.</div>}
+          <div className="panelhead"><div><div className="eyebrow">ENVIRONMENT SENSORS</div><h3>Connected nodes</h3></div><Radio size={18}/></div>
+          {sensorDevices.length ? sensorDevices.map((device) => (
+            <div className="device" key={device.device_id}>
+              <div className="deviceicon"><Radio size={18}/></div>
+              <div className="deviceinfo"><strong>{device.device_id}</strong><small>{device.latest?.sensor || "ENVIRONMENT SENSOR"} · {device.latest?.valid ? "Sensor valid" : "No valid reading"}</small></div>
+              <span className={device.availability?.status === "online" ? "status good" : "status muted"}><i/>{device.availability?.status || "UNKNOWN"}</span>
+            </div>
+          )) : <div className="empty">No environmental sensor has published telemetry yet.</div>}
           <div className="devicefoot"><span>{sensorOnline ? <Wifi size={14}/> : <WifiOff size={14}/>} Sensor broker presence</span><strong>{sensorOnline ? "ONLINE" : "NOT REPORTED"}</strong></div>
         </article>
       </div>
-
-      <section className="power-meter-block">
-        <div className="sectionhead power-sectionhead">
-          <div><div className="eyebrow">ELECTRICAL TELEMETRY · MQTT MOCK DEVICE</div><h2>Power meter</h2></div>
-          <span className={powerMeterOnline ? "status good" : "status muted"}><i/>{powerMeterOnline ? "METER ONLINE" : "WAITING FOR METER"}</span>
+      <div className="sourcefoot">AIR QUALITY SOURCE: MQTT · {reading?.device_id || "NO SENSOR DEVICE"} · {reading ? "RECEIVED " + new Date(reading.received_at).toLocaleString() : "NO READINGS RECEIVED"}</div>
+    </section> : tab === "aqi-predictions" ? <section className="content">
+      <div className="sectionhead"><div><div className="eyebrow">AIR QUALITY FORECASTING</div><h2>AQI predictions</h2></div><span className="status muted"><i/> AQI MODEL BLOCKED · SENSOR INPUTS</span></div>
+      <article className="prediction">
+        <div className="predictionicon"><BrainCircuit size={26}/></div>
+        <div>
+          <h3>AQI prediction is not available yet</h3>
+          <p>The current MQ-135 signal is not sufficient to train or validate an AQI forecasting model. A defensible prediction requires calibrated PM2.5/PM10 and relevant gas measurements, timestamped history, and a validated model.</p>
+          <div className="requirements"><span>01 / CALIBRATED PM2.5 + PM10</span><span>02 / POLLUTANT HISTORY</span><span>03 / VALIDATED FORECAST MODEL</span></div>
         </div>
-        <div className="power-sim-notice">SIMULATED SINGLE-PHASE VALUES · NOT A PHYSICAL METER</div>
-        {power ? <>
-          <div className="metrics power-metrics">
-            <article className="metric"><div className="metriclabel">VOLTAGE</div><div className="metricvalue">{fmt(power.voltage_v, 1)}<small> V</small></div><div className="metricfoot">RMS voltage</div></article>
-            <article className="metric"><div className="metriclabel">CURRENT</div><div className="metricvalue">{fmt(power.current_a, 2)}<small> A</small></div><div className="metricfoot">Simulated load current</div></article>
-            <article className="metric"><div className="metriclabel">ACTIVE POWER</div><div className="metricvalue">{fmt(power.active_power_w, 1)}<small> W</small></div><div className="metricfoot">Real power</div></article>
-            <article className="metric"><div className="metriclabel">POWER FACTOR</div><div className="metricvalue">{fmt(power.power_factor, 3)}</div><div className="metricfoot">0–1 ratio</div></article>
-            <article className="metric"><div className="metriclabel">FREQUENCY</div><div className="metricvalue">{fmt(power.frequency_hz, 2)}<small> Hz</small></div><div className="metricfoot">Nominal 50 Hz</div></article>
-            <article className="metric"><div className="metriclabel">ENERGY</div><div className="metricvalue">{fmt(power.energy_kwh, 3)}<small> kWh</small></div><div className="metricfoot">Since mock process start</div></article>
-          </div>
-          <div className="grid2 power-grid">
-            <article className="panel">
-              <div className="panelhead"><div><div className="eyebrow">LOAD PROFILE</div><h3>Active power history</h3></div><span className="unit">WATTS</span></div>
-              {powerChartData.length ? <div className="chart"><ResponsiveContainer width="100%" height="100%"><AreaChart data={powerChartData}>
-                <defs><linearGradient id="fillPower" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor="#287e83" stopOpacity={.3}/><stop offset="95%" stopColor="#287e83" stopOpacity={0}/></linearGradient></defs>
-                <CartesianGrid strokeDasharray="3 4" vertical={false} stroke="#e5e0d5"/><XAxis dataKey="time" tick={{fontSize:10}} minTickGap={28}/><YAxis tick={{fontSize:10}} width={48}/><Tooltip/>
-                <Area type="monotone" dataKey="activePower" name="Active power (W)" stroke="#287e83" fill="url(#fillPower)" strokeWidth={2} connectNulls/>
-              </AreaChart></ResponsiveContainer></div> : <div className="empty">Waiting for power-meter MQTT telemetry…</div>}
-            </article>
-            <article className="panel power-details">
-              <div className="panelhead"><div><div className="eyebrow">ELECTRICAL DETAILS</div><h3>Live meter values</h3></div><Zap size={18}/></div>
-              <dl>
-                <div><dt>Apparent power</dt><dd>{fmt(power.apparent_power_va, 1)} VA</dd></div>
-                <div><dt>Reactive power</dt><dd>{fmt(power.reactive_power_var, 1)} var</dd></div>
-                <div><dt>Meter identity</dt><dd>{powerMeterReading?.device_id || POWER_METER_DEVICE_ID}</dd></div>
-                <div><dt>Last received</dt><dd>{powerMeterReading ? new Date(powerMeterReading.received_at).toLocaleTimeString() : "—"}</dd></div>
-              </dl>
-            </article>
-          </div>
-        </> : <div className="empty power-empty">Waiting for the mock power meter to publish through MQTT. Check the mock server logs and broker ACLs.</div>}
-      </section>
+      </article>
+      <div className="metrics forecastmetrics">
+        <article className="metric"><div className="metriclabel">1 HOUR AQI</div><div className="metricvalue">—</div><div className="metricfoot">Not available</div></article>
+        <article className="metric"><div className="metriclabel">6 HOUR AQI</div><div className="metricvalue">—</div><div className="metricfoot">Not available</div></article>
+        <article className="metric"><div className="metriclabel">24 HOUR AQI</div><div className="metricvalue">—</div><div className="metricfoot">Not available</div></article>
+      </div>
+      <article className="prediction model-prediction">
+        <div className="predictionicon"><Activity size={26}/></div>
+        <div className="model-copy">
+          <div className="eyebrow">LIGHTWEIGHT SENSOR MODEL · NOT AQI</div>
+          <h3>MQ-135 response baseline</h3>
+          <p>A simple exponential smoothing (SES) model estimates the next raw ADC response from recent MQTT samples. This is useful for monitoring sensor drift, but it does not predict AQI or pollutant concentration.</p>
+          {sensorForecast?.available && sensorForecast.data ? <>
+            <div className="metrics model-metrics">
+              <article className="metric"><div className="metriclabel">LATEST RAW ADC</div><div className="metricvalue">{sensorForecast.data.latest_raw_adc}</div></article>
+              <article className="metric"><div className="metriclabel">SMOOTHED BASELINE</div><div className="metricvalue">{fmt(sensorForecast.data.smoothed_raw_adc, 1)}</div></article>
+              <article className="metric"><div className="metriclabel">NEXT READING ESTIMATE</div><div className="metricvalue">{fmt(sensorForecast.data.next_reading_estimate_adc, 1)}</div></article>
+            </div>
+            <div className="model-meta">MODEL: SES v{sensorForecast.model.version || "1.0"} · α {fmt(sensorForecast.model.alpha, 2)} · {sensorForecast.model.samples} SAMPLES</div>
+          </> : <div className="model-wait">{sensorForecast?.reason || "Waiting for enough valid MQ-135 samples to initialize the sensor-response model."}</div>}
+        </div>
+      </article>
+    </section> : tab === "energy" ? <section className="content">
+      <div className="sectionhead"><div><div className="eyebrow">ELECTRICAL TELEMETRY · MQTT DEVICE</div><h2>Power meter</h2></div><span className={powerMeterOnline ? "status good" : "status muted"}><i/>{powerMeterOnline ? "METER ONLINE" : "WAITING FOR METER"}</span></div>
+      <div className="power-sim-notice">SIMULATED SINGLE-PHASE VALUES · NOT A PHYSICAL METER</div>
+      {power ? <>
+        <div className="metrics power-metrics">
+          <article className="metric"><div className="metriclabel">VOLTAGE</div><div className="metricvalue">{fmt(power.voltage_v, 1)}<small> V</small></div><div className="metricfoot">RMS voltage</div></article>
+          <article className="metric"><div className="metriclabel">CURRENT</div><div className="metricvalue">{fmt(power.current_a, 2)}<small> A</small></div><div className="metricfoot">Load current</div></article>
+          <article className="metric"><div className="metriclabel">ACTIVE POWER</div><div className="metricvalue">{fmt(power.active_power_w, 1)}<small> W</small></div><div className="metricfoot">Real power</div></article>
+          <article className="metric"><div className="metriclabel">POWER FACTOR</div><div className="metricvalue">{fmt(power.power_factor, 3)}</div><div className="metricfoot">0–1 ratio</div></article>
+          <article className="metric"><div className="metriclabel">FREQUENCY</div><div className="metricvalue">{fmt(power.frequency_hz, 2)}<small> Hz</small></div><div className="metricfoot">Nominal 50 Hz</div></article>
+          <article className="metric"><div className="metriclabel">ENERGY</div><div className="metricvalue">{fmt(power.energy_kwh, 3)}<small> kWh</small></div><div className="metricfoot">Since meter process start</div></article>
+        </div>
+        <div className="grid2 power-grid">
+          <article className="panel">
+            <div className="panelhead"><div><div className="eyebrow">LOAD PROFILE</div><h3>Active power history</h3></div><span className="unit">WATTS</span></div>
+            {powerChartData.length ? <div className="chart"><ResponsiveContainer width="100%" height="100%"><AreaChart data={powerChartData}>
+              <defs><linearGradient id="fillPower" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor="#287e83" stopOpacity={.3}/><stop offset="95%" stopColor="#287e83" stopOpacity={0}/></linearGradient></defs>
+              <CartesianGrid strokeDasharray="3 4" vertical={false} stroke="#e5e0d5"/><XAxis dataKey="time" tick={{fontSize:10}} minTickGap={28}/><YAxis tick={{fontSize:10}} width={48}/><Tooltip/>
+              <Area type="monotone" dataKey="activePower" name="Active power (W)" stroke="#287e83" fill="url(#fillPower)" strokeWidth={2} connectNulls/>
+            </AreaChart></ResponsiveContainer></div> : <div className="empty">Waiting for power-meter MQTT telemetry…</div>}
+          </article>
+          <article className="panel power-details">
+            <div className="panelhead"><div><div className="eyebrow">ELECTRICAL DETAILS</div><h3>Live meter values</h3></div><Zap size={18}/></div>
+            <dl>
+              <div><dt>Apparent power</dt><dd>{fmt(power.apparent_power_va, 1)} VA</dd></div>
+              <div><dt>Reactive power</dt><dd>{fmt(power.reactive_power_var, 1)} var</dd></div>
+              <div><dt>Meter identity</dt><dd>{powerMeterReading?.device_id || POWER_METER_DEVICE_ID}</dd></div>
+              <div><dt>Last received</dt><dd>{powerMeterReading ? new Date(powerMeterReading.received_at).toLocaleTimeString() : "—"}</dd></div>
+            </dl>
+          </article>
+        </div>
+      </> : <div className="empty power-empty">Waiting for the mock power meter to publish through MQTT. Check the mock server logs and broker ACLs.</div>}
 
-      <div className="sourcefoot">MQ-135 SOURCE: MQTT · {reading?.device_id || "NO SENSOR DEVICE"} · {reading ? "RECEIVED " + new Date(reading.received_at).toLocaleString() : "NO READINGS RECEIVED"}<br/>POWER SOURCE: MQTT · {powerMeterReading?.device_id || POWER_METER_DEVICE_ID} · {powerMeterReading ? "RECEIVED " + new Date(powerMeterReading.received_at).toLocaleString() : "NO METER READINGS RECEIVED"}</div>
-    </section> : tab === "power-map" ? <section className="content power-map-content">
+      <section className="carbon-block">
+        <div className="sectionhead"><div><div className="eyebrow">SCOPE 2 · LOCATION-BASED ESTIMATE</div><h2><Leaf size={20}/> Electricity carbon emissions</h2></div><span className="status muted"><i/> ESTIMATE · NOT AN OFFSET</span></div>
+        <div className="carbon-grid">
+          <article className="carbon-primary">
+            <div className="metriclabel">ESTIMATED CO₂ FROM METERED ENERGY</div>
+            <div className="carbon-value">{sessionCarbonKg == null ? "—" : fmt(sessionCarbonKg, 3)} <small>kg CO₂</small></div>
+            <p>Calculated from the meter's cumulative kWh reading and the configured India grid factor.</p>
+          </article>
+          <article className="carbon-detail">
+            <div><span>Meter energy</span><strong>{sessionEnergyKwh == null ? "—" : fmt(sessionEnergyKwh, 4) + " kWh"}</strong></div>
+            <div><span>Grid factor</span><strong>{fmt(emissionFactor, 3)} kg CO₂/kWh</strong></div>
+            <div><span>Factor period</span><strong>{carbonSummary?.data?.factor_fiscal_year || "—"}</strong></div>
+            <div><span>Factor source</span><strong>{carbonSummary?.data?.factor_source || "Not available"}</strong></div>
+            <div><span>Calculation</span><strong>kWh × grid factor</strong></div>
+          </article>
+        </div>
+        <p className="carbon-note">This is an estimate of emissions associated with grid electricity use. It is not a carbon-offset claim, avoided-emissions claim, or verified carbon credit. The mock meter's energy counter resets when its process restarts.</p>
+        <p className="carbon-source">Factor source: {carbonSummary?.data?.factor_source || "Not available"} · {carbonSummary?.data?.factor_scope || "Scope not supplied"}.</p>
+        {carbonSummary?.data?.factor_source?.startsWith("Central Electricity Authority") ? <p className="carbon-source"><a href="https://cea.nic.in/cdm-co2-baseline-database/?lang=en" target="_blank" rel="noreferrer">CEA CO₂ Baseline Database</a></p> : null}
+        {!carbonSummary?.available ? <p className="carbon-note">{carbonSummary?.reason || "Waiting for current, valid power-meter data. Carbon estimates are hidden until the meter is online and its current session has published a valid reading."}</p> : null}
+      </section>
+      <div className="sourcefoot">POWER SOURCE: MQTT · {powerMeterReading?.device_id || POWER_METER_DEVICE_ID} · {powerMeterReading ? "RECEIVED " + new Date(powerMeterReading.received_at).toLocaleString() : "NO METER READINGS RECEIVED"}</div>
+    </section> : tab === "energy-predictions" ? <section className="content">
+      <div className="sectionhead"><div><div className="eyebrow">ENERGY USE OUTLOOK</div><h2>Energy & emissions forecast</h2></div><span className={energyForecast?.available ? "status good" : "status muted"}><i/>{energyForecast?.available ? "SES MODEL READY" : "WAITING FOR DATA"}</span></div>
+      <article className="prediction energy-prediction">
+        <div className="predictionicon"><TrendingUp size={26}/></div>
+        <div>
+          <div className="eyebrow">LIGHTWEIGHT ENERGY MODEL</div>
+          <h3>Simple exponential smoothing (SES)</h3>
+          <p>The API smooths recent MQTT active-power readings using configurable α and projects a flat load into each horizon. It is a statistical baseline, not a trained AI/ML model; it assumes recent demand remains representative.</p>
+          <div className="requirements"><span>INPUT / MQTT ACTIVE POWER</span><span>MODEL / SES</span><span>FACTOR / {fmt(emissionFactor, 3)} KG CO₂/KWH</span></div>
+        </div>
+      </article>
+      {energyForecast?.available && energyForecast.data ? <>
+        <div className="forecast-assumption"><Clock size={16}/> Smoothed active power: <strong>{fmt(energyForecast.data.smoothed_active_power_w, 1)} W</strong> · {energyForecast.model.samples} samples · α {fmt(energyForecast.model.alpha, 2)}</div>
+        <div className="metrics energy-forecast-metrics">
+          <article className="metric"><div className="metriclabel">NEXT 24 HOURS</div><div className="metricvalue">{fmt(energyForecast.data.projections.next_24_hours.energy_kwh, 2)}<small> kWh</small></div><div className="metricfoot">{fmt(energyForecast.data.projections.next_24_hours.estimated_co2_kg, 3)} kg CO₂ estimated</div></article>
+          <article className="metric"><div className="metriclabel">NEXT 7 DAYS</div><div className="metricvalue">{fmt(energyForecast.data.projections.next_7_days.energy_kwh, 2)}<small> kWh</small></div><div className="metricfoot">{fmt(energyForecast.data.projections.next_7_days.estimated_co2_kg, 3)} kg CO₂ estimated</div></article>
+          <article className="metric"><div className="metriclabel">NEXT 30 DAYS</div><div className="metricvalue">{fmt(energyForecast.data.projections.next_30_days.energy_kwh, 2)}<small> kWh</small></div><div className="metricfoot">{fmt(energyForecast.data.projections.next_30_days.estimated_co2_kg, 3)} kg CO₂ estimated</div></article>
+        </div>
+      </> : <div className="model-wait">{energyForecast?.reason || "Waiting for enough valid MQTT power readings to initialize the energy forecast."}</div>}
+      <p className="carbon-note">These are baseline energy-use and grid-CO₂ projections, not offsets or verified emissions reductions. The model uses in-memory API history, which resets when the API restarts.</p>
+    </section> : <section className="content power-map-content">
       <div className="sectionhead">
         <div><div className="eyebrow">INDIA ELECTRICITY INFRASTRUCTURE</div><h2>Power Map of India</h2></div>
         <a className="power-map-open" href={API + "/api/power-map/open"} target="_blank" rel="noreferrer noopener">Open full map <Map size={14}/></a>
@@ -205,11 +356,7 @@ export default function App() {
         <span>Live map and published data are served through the EVS0 same-origin proxy.</span>
       </div>
       <iframe className="power-map-frame" src={API + "/api/power-map/"} title="Power Map of India" loading="lazy" referrerPolicy="strict-origin-when-cross-origin" sandbox="allow-scripts allow-forms allow-popups" />
-    </section> : <section className="content">
-      <div className="sectionhead"><div><div className="eyebrow">FORECAST ENGINE</div><h2>AI predictions</h2></div><span className="status muted"><i/> MODEL NOT CONFIGURED</span></div>
-      <article className="prediction"><div className="predictionicon"><BrainCircuit size={26}/></div><div><h3>Forecasting is not available yet</h3><p>The dashboard will show 1-hour, 6-hour, and 24-hour forecasts after sufficient historical pollutant data has been collected and a model has been trained and validated.</p><div className="requirements"><span>01 / HISTORICAL DATA</span><span>02 / CALIBRATED PM SENSORS</span><span>03 / VALIDATED MODEL</span></div></div></article>
-      <div className="metrics forecastmetrics"><article className="metric"><div className="metriclabel">1 HOUR FORECAST</div><div className="metricvalue">—</div><div className="metricfoot">Not configured</div></article><article className="metric"><div className="metriclabel">6 HOUR FORECAST</div><div className="metricvalue">—</div><div className="metricfoot">Not configured</div></article><article className="metric"><div className="metriclabel">24 HOUR FORECAST</div><div className="metricvalue">—</div><div className="metricfoot">Not configured</div></article></div>
     </section>}
-    <footer><span>EVS0 / AIR QUALITY MONITORING</span><span>NO AUTHENTICATION · DASHBOARD MODE</span></footer>
+    <footer><span>EVS0 / AIR QUALITY & ENERGY MONITORING</span><span>NO AUTHENTICATION · DASHBOARD MODE</span></footer>
   </main>;
 }

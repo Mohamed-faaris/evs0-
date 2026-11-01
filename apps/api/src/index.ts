@@ -12,6 +12,7 @@ type Telemetry = {
   sensor?: string;
   device_type?: "sensor" | "power_meter";
   meter_model?: string;
+  session_id?: string;
   timestamp?: string | null;
   uptime_seconds?: number;
   sequence?: number;
@@ -38,6 +39,7 @@ type DeviceState = {
   device_id: string;
   state?: string;
   uptime_seconds?: number;
+  session_id?: string;
   network?: { wifi_connected?: boolean; wifi_ssid?: string; hotspot_active?: boolean };
   sensor?: { model?: string; valid?: boolean };
   mqtt?: { connected?: boolean };
@@ -49,6 +51,42 @@ const readings: Telemetry[] = [];
 const states = new Map<string, DeviceState>();
 const availability = new Map<string, Availability>();
 const MAX_READINGS = 5000;
+function resolveBoundedInteger(value: string | undefined, fallback: number, minimum: number, maximum: number): number {
+  const parsed = Number(value);
+  return Number.isInteger(parsed) ? Math.min(maximum, Math.max(minimum, parsed)) : fallback;
+}
+
+const FORECAST_MIN_SAMPLES = resolveBoundedInteger(process.env.FORECAST_MIN_SAMPLES, 10, 5, 500);
+const FORECAST_WINDOW_SAMPLES = Math.max(
+  FORECAST_MIN_SAMPLES,
+  resolveBoundedInteger(process.env.FORECAST_WINDOW_SAMPLES, 120, 10, 1000)
+);
+
+function resolveAlpha(value: string | undefined, fallback: number): number {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 && parsed <= 1 ? parsed : fallback;
+}
+
+const SENSOR_FORECAST_ALPHA = resolveAlpha(process.env.SENSOR_FORECAST_ALPHA, 0.25);
+const ENERGY_FORECAST_ALPHA = resolveAlpha(process.env.ENERGY_FORECAST_ALPHA, 0.25);
+
+function exponentialSmoothing(values: number[], alpha: number): number | null {
+  const samples = values.filter((value) => Number.isFinite(value) && value >= 0);
+  if (samples.length < FORECAST_MIN_SAMPLES) return null;
+  let level = samples[0];
+  for (let index = 1; index < samples.length; index += 1) {
+    level = alpha * samples[index] + (1 - alpha) * level;
+  }
+  return level;
+}
+
+function projectEnergyAndCarbon(activePowerW: number, hours: number) {
+  const energyKwh = activePowerW * hours / 1000;
+  return {
+    energy_kwh: Number(energyKwh.toFixed(4)),
+    estimated_co2_kg: Number((energyKwh * GRID_EMISSION_FACTOR_KG_CO2_PER_KWH).toFixed(4))
+  };
+}
 const POWER_METER_DEVICE_ID = process.env.POWER_METER_DEVICE_ID || "power-meter-001";
 let mqttConnected = false;
 
@@ -182,7 +220,9 @@ app.get("/api/devices", (c) => {
     device_id,
     state: states.get(device_id) || null,
     availability: availability.get(device_id) || null,
-    latest: [...readings].reverse().find((reading) => reading.device_id === device_id) || null
+    latest: device_id === POWER_METER_DEVICE_ID
+      ? getCurrentPowerMeterReadings().at(-1) || null
+      : [...readings].reverse().find((reading) => reading.device_id === device_id) || null
   })));
 });
 app.get("/api/readings/latest", (c) => {
@@ -191,17 +231,112 @@ app.get("/api/readings/latest", (c) => {
   return c.json({ data: latest });
 });
 app.get("/api/power-meter/latest", (c) => {
-  const latest = [...readings].reverse().find((reading) =>
-    reading.device_id === POWER_METER_DEVICE_ID && reading.device_type === "power_meter"
-  ) || null;
+  const latest = getCurrentPowerMeterReadings().at(-1) || null;
   return c.json({ data: latest });
 });
+
+const DEFAULT_GRID_EMISSION_FACTOR_KG_CO2_PER_KWH = 0.675;
+const rawGridEmissionFactor = process.env.GRID_EMISSION_FACTOR_KG_CO2_PER_KWH?.trim();
+const configuredGridEmissionFactor = rawGridEmissionFactor ? Number(rawGridEmissionFactor) : DEFAULT_GRID_EMISSION_FACTOR_KG_CO2_PER_KWH;
+if (!Number.isFinite(configuredGridEmissionFactor) || configuredGridEmissionFactor <= 0) {
+  throw new Error("GRID_EMISSION_FACTOR_KG_CO2_PER_KWH must be a finite number greater than zero.");
+}
+const GRID_EMISSION_FACTOR_KG_CO2_PER_KWH = configuredGridEmissionFactor;
+const isDefaultGridEmissionFactor = GRID_EMISSION_FACTOR_KG_CO2_PER_KWH === DEFAULT_GRID_EMISSION_FACTOR_KG_CO2_PER_KWH;
+const GRID_EMISSION_FACTOR_SOURCE = process.env.GRID_EMISSION_FACTOR_SOURCE?.trim() ||
+  (isDefaultGridEmissionFactor ? "Central Electricity Authority (CEA), CO2 Baseline Database v22.0" : "Custom configured emission factor");
+const GRID_EMISSION_FACTOR_FISCAL_YEAR = process.env.GRID_EMISSION_FACTOR_FISCAL_YEAR?.trim() ||
+  (isDefaultGridEmissionFactor ? "FY2025-26" : "CUSTOM");
+const GRID_EMISSION_FACTOR_SCOPE = process.env.GRID_EMISSION_FACTOR_SCOPE?.trim() ||
+  (isDefaultGridEmissionFactor
+    ? "India national-grid weighted-average electricity factor; CO2 estimate only"
+    : "Operator-defined factor; source and accounting boundary require verification");
+
+const POWER_METER_MAX_AGE_MS = resolveBoundedInteger(
+  process.env.POWER_METER_MAX_AGE_SECONDS,
+  20,
+  5,
+  3600
+) * 1000;
+
+function matchesCurrentPowerMeterSession(reading: Telemetry): boolean {
+  if (
+    reading.device_id !== POWER_METER_DEVICE_ID ||
+    reading.device_type !== "power_meter" ||
+    reading.valid === false
+  ) return false;
+
+  const currentSessionId = states.get(POWER_METER_DEVICE_ID)?.session_id;
+  if (typeof currentSessionId === "string" && currentSessionId.length > 0) {
+    return reading.session_id === currentSessionId;
+  }
+  // Session-tagged telemetry is not current until its matching retained state arrives.
+  return !(typeof reading.session_id === "string" && reading.session_id.length > 0);
+}
+
+function collectPowerMeterReadings(requireLive: boolean): Telemetry[] {
+  const deduplicated = new Map<string, Telemetry>();
+  for (const reading of readings) {
+    if (!matchesCurrentPowerMeterSession(reading)) continue;
+
+    if (requireLive) {
+      if (availability.get(POWER_METER_DEVICE_ID)?.status !== "online") continue;
+      const receivedAt = Date.parse(reading.received_at);
+      const ageMs = Date.now() - receivedAt;
+      if (!Number.isFinite(receivedAt) || ageMs < 0 || ageMs > POWER_METER_MAX_AGE_MS) continue;
+    }
+
+    const session = reading.session_id || "legacy";
+    const sampleKey = typeof reading.sequence === "number" && Number.isFinite(reading.sequence)
+      ? session + ":seq:" + reading.sequence
+      : typeof reading.timestamp === "string" && reading.timestamp
+        ? session + ":timestamp:" + reading.timestamp
+        : session + ":received:" + reading.received_at;
+    deduplicated.set(sampleKey, reading);
+  }
+  return [...deduplicated.values()].sort((left, right) => {
+    const leftTime = Date.parse(left.timestamp || left.received_at);
+    const rightTime = Date.parse(right.timestamp || right.received_at);
+    return leftTime - rightTime;
+  });
+}
+
+function getCurrentPowerMeterReadings(): Telemetry[] {
+  return collectPowerMeterReadings(true);
+}
+
+function getPowerMeterSessionHistory(): Telemetry[] {
+  return collectPowerMeterReadings(false);
+}
+
+app.get("/api/power-meter/carbon", (c) => {
+  const latest = getCurrentPowerMeterReadings().at(-1) || null;
+  const rawEnergyKwh = latest?.readings?.energy_kwh;
+  const energyKwh = typeof rawEnergyKwh === "number" && Number.isFinite(rawEnergyKwh) && rawEnergyKwh >= 0
+    ? rawEnergyKwh
+    : null;
+
+  return c.json({
+    available: energyKwh !== null,
+    reason: energyKwh === null ? "Waiting for a fresh, valid power-meter reading from the current meter session." : null,
+    data: {
+      device_id: POWER_METER_DEVICE_ID,
+      session_id: latest?.session_id || null,
+      last_received_at: latest?.received_at || null,
+      energy_kwh: energyKwh,
+      emission_factor_kg_co2_per_kwh: GRID_EMISSION_FACTOR_KG_CO2_PER_KWH,
+      estimated_co2_kg: energyKwh === null ? null : energyKwh * GRID_EMISSION_FACTOR_KG_CO2_PER_KWH,
+      factor_fiscal_year: GRID_EMISSION_FACTOR_FISCAL_YEAR,
+      factor_source: GRID_EMISSION_FACTOR_SOURCE,
+      factor_scope: GRID_EMISSION_FACTOR_SCOPE
+    }
+  });
+});
+
 app.get("/api/power-meter/history", (c) => {
   const requestedLimit = Number(c.req.query("limit") || 100);
   const limit = Number.isFinite(requestedLimit) ? Math.min(Math.max(requestedLimit, 1), 1000) : 100;
-  const data = readings
-    .filter((reading) => reading.device_id === POWER_METER_DEVICE_ID && reading.device_type === "power_meter")
-    .slice(-limit);
+  const data = getPowerMeterSessionHistory().slice(-limit);
   return c.json({ data });
 });
 app.get("/api/readings/history", (c) => {
@@ -211,6 +346,66 @@ app.get("/api/readings/history", (c) => {
   const data = readings.filter((reading) => reading.device_type !== "power_meter" && (!deviceId || reading.device_id === deviceId)).slice(-limit);
   return c.json({ data });
 });
+app.get("/api/aqi/response-forecast", (c) => {
+  const samples = readings
+    .filter((reading) => reading.device_id !== POWER_METER_DEVICE_ID && reading.valid !== false)
+    .map((reading) => reading.readings?.raw_adc)
+    .filter((value): value is number => typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 4095)
+    .slice(-FORECAST_WINDOW_SAMPLES);
+  const estimate = exponentialSmoothing(samples, SENSOR_FORECAST_ALPHA);
+  if (estimate === null) {
+    return c.json({
+      available: false,
+      reason: `Need at least ${FORECAST_MIN_SAMPLES} valid MQ-135 raw ADC samples; currently have ${samples.length}.`,
+      target: "mq135_raw_adc",
+      model: { name: "simple_exponential_smoothing", alpha: SENSOR_FORECAST_ALPHA, samples: samples.length }
+    });
+  }
+  return c.json({
+    available: true,
+    target: "mq135_raw_adc",
+    model: { name: "simple_exponential_smoothing", version: "1.0", alpha: SENSOR_FORECAST_ALPHA, samples: samples.length },
+    data: {
+      latest_raw_adc: samples[samples.length - 1],
+      smoothed_raw_adc: Number(estimate.toFixed(2)),
+      next_reading_estimate_adc: Number(estimate.toFixed(2))
+    },
+    note: "This estimates the next MQ-135 raw response only. It is not AQI, PM2.5, PM10, or a calibrated pollutant concentration."
+  });
+});
+
+app.get("/api/power-meter/forecast", (c) => {
+  const currentMeterReadings = getCurrentPowerMeterReadings();
+  const samples = currentMeterReadings
+    .map((reading) => reading.readings?.active_power_w)
+    .filter((value): value is number => typeof value === "number" && Number.isFinite(value) && value >= 0)
+    .slice(-FORECAST_WINDOW_SAMPLES);
+  const smoothedPower = exponentialSmoothing(samples, ENERGY_FORECAST_ALPHA);
+  if (smoothedPower === null) {
+    return c.json({
+      available: false,
+      reason: currentMeterReadings.length === 0
+        ? "No fresh, valid power-meter samples are available for the current online meter session."
+        : `Need at least ${FORECAST_MIN_SAMPLES} valid power samples; currently have ${samples.length}.`,
+      model: { name: "simple_exponential_smoothing", alpha: ENERGY_FORECAST_ALPHA, samples: samples.length }
+    });
+  }
+  const activePowerW = Number(smoothedPower.toFixed(2));
+  return c.json({
+    available: true,
+    model: { name: "simple_exponential_smoothing", version: "1.0", alpha: ENERGY_FORECAST_ALPHA, samples: samples.length },
+    data: {
+      smoothed_active_power_w: activePowerW,
+      projections: {
+        next_24_hours: projectEnergyAndCarbon(activePowerW, 24),
+        next_7_days: projectEnergyAndCarbon(activePowerW, 24 * 7),
+        next_30_days: projectEnergyAndCarbon(activePowerW, 24 * 30)
+      }
+    },
+    note: "Flat-load projection from exponentially smoothed recent active power. It is a statistical baseline, not a trained AI/ML model."
+  });
+});
+
 app.get("/api/aqi/current", (c) => c.json({
   available: false,
   reason: "MQ-135 raw response is not sufficient to calculate CPCB AQI. Add calibrated particulate and pollutant sensors."
@@ -219,7 +414,7 @@ app.get("/api/aqi/predictions", (c) => c.json({
   available: false,
   reason: "No validated prediction model is configured yet. Predictions will be enabled after collecting and validating historical data."
 }));
-app.get("/", (c) => c.json({ name: "EVS0 Dashboard API", docs: ["/api/health", "/api/devices", "/api/readings/latest", "/api/readings/history", "/api/power-meter/latest", "/api/power-meter/history", "/api/aqi/current", "/api/aqi/predictions"] }));
+app.get("/", (c) => c.json({ name: "EVS0 Dashboard API", docs: ["/api/health", "/api/devices", "/api/readings/latest", "/api/readings/history", "/api/power-meter/latest", "/api/power-meter/history", "/api/power-meter/carbon", "/api/power-meter/forecast", "/api/aqi/current", "/api/aqi/predictions", "/api/aqi/response-forecast"] }));
 
 const POWER_MAP_UPSTREAM_VALUE = (process.env.POWER_MAP_UPSTREAM || "https://power.reclaimchennai.city").trim();
 let POWER_MAP_UPSTREAM: URL | null = null;
