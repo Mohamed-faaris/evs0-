@@ -34,7 +34,7 @@ The same default is used when the variable is omitted. The proxy requires HTTPS 
 ## Proxy behaviour
 
 - Only `GET` and `HEAD` requests are allowed.
-- The Hono server forwards the request path and query string to the configured upstream.
+- The Hono server forwards the request path and query string to the configured upstream and streams large assets (especially GeoJSON) back without buffering the full file in API memory.
 - It preserves content type, cache-control, ETag, last-modified, and expiry headers.
 - Upstream failures return HTTP 502 with a small JSON error.
 - The React iframe points to `/api/power-map/`; the Vite development server already proxies `/api/*` to the Hono API on port 3002.
