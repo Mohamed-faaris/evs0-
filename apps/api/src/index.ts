@@ -71,7 +71,7 @@ function resolveMqttUrl(): string | undefined {
 }
 
 function parseTopic(topic: string, topicRoot: string): { deviceId: string; kind: TopicKind } | null {
-  const prefix = topicRoot.replace(/^\\/+|\\/+$/g, "");
+  const prefix = topicRoot.replace(/^\/+|\/+$/g, "");
   const parts = topic.split("/");
   const rootParts = prefix.split("/");
   if (parts.length !== rootParts.length + 2) return null;
@@ -83,7 +83,7 @@ function parseTopic(topic: string, topicRoot: string): { deviceId: string; kind:
   return { deviceId, kind };
 }
 
-const topicRoot = (process.env.MQTT_TOPIC_ROOT || "evs/v1/devices").replace(/^\\/+|\\/+$/g, "");
+const topicRoot = (process.env.MQTT_TOPIC_ROOT || "evs/v1/devices").replace(/^\/+|\/+$/g, "");
 const mqttUrl = resolveMqttUrl();
 let mqttClient: MqttClient | undefined;
 
