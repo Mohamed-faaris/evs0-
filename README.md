@@ -63,14 +63,15 @@ pnpm start:mock
 - Orchestration: pnpm workspaces + Turborepo
 - Authentication: none; dashboard APIs are read-only
 
-The API subscribes to the telemetry, state, and availability topics documented in [firmware/mqtt.md](firmware/mqtt.md). It does not subscribe to command topics or publish device commands.
+The API subscribes to telemetry, state, and availability topics under `MQTT_TOPIC_ROOT`. It keeps MQ-135 and power-meter readings separate and exposes `/api/power-meter/latest` and `/api/power-meter/history`. The mock server publishes two independent MQTT identities: `DEVICE_ID` (default `device-001`) and `POWER_METER_DEVICE_ID` (default `power-meter-001`). Both use the broker credentials from `.env`, but each has a distinct MQTT client ID.
 
 ## Dashboard pages
 
 1. **Live Monitoring** — device presence, MQ-135 ADC/voltage telemetry, and history chart.
-2. **AI Predictions** — model readiness and forecast status.
+2. **Power Meter** — MQTT-simulated single-phase voltage, current, active/apparent/reactive power, power factor, frequency, energy, and load history.
+3. **AI Predictions** — model readiness and forecast status.
 
-MQ-135 alone does not provide PM2.5, PM10, or official CPCB AQI. The UI intentionally does not fabricate these values. Prediction outputs remain unavailable until historical training data and a validated model are available.
+The mock power meter sends synthetic single-phase electrical values through MQTT; it is not connected to a physical energy meter. Voltage/current/power/energy values are illustrative only. MQ-135 alone does not provide PM2.5, PM10, or official CPCB AQI. The UI intentionally does not fabricate these values. Prediction outputs remain unavailable until historical training data and a validated model are available.
 
 ## Current limitations
 
