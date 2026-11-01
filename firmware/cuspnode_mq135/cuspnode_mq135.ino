@@ -384,6 +384,10 @@ void printMQTTStatus() {
   Serial.printf("MQTT link: %s\n", mqttClient.connected() ? "CONNECTED" : "DISCONNECTED");
   Serial.printf("MQTT error: %d\n", static_cast<int>(mqttClient.lastError()));
   Serial.printf("MQTT CONNACK: %d\n", static_cast<int>(mqttClient.returnCode()));
+  char tlsError[128] = {0};
+  const int tlsErrorCode = mqttTlsClient.lastError(tlsError, sizeof(tlsError));
+  Serial.printf("TLS error: %d%s%s\n", tlsErrorCode,
+    tlsErrorCode != 0 ? " - " : "", tlsErrorCode != 0 ? tlsError : "");
 }
 
 bool setMQTTServer(const String& host, const String& portText) {
@@ -1076,7 +1080,7 @@ void handleSerialCommand(String command) {
   else if (command.startsWith("mqtt set-protocol ")) {
     String protocol = command.substring(18);
     protocol.trim();
-    Serial.println(setMQTTProtocol(protocol) ? "[MQTT] Protocol updated." : "Use mqtt or mqtts.");
+    Serial.println(setMQTTProtocol(protocol) ? "[MQTT] Protocol updated." : "Only mqtts (MQTT over TLS) is supported.");
   }
   else if (command.startsWith("mqtt set-auth ")) {
     String args = command.substring(14);
