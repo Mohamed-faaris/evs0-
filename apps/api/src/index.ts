@@ -1,4 +1,8 @@
+import dotenv from "dotenv";
+import path from "node:path";
 import { serve } from "@hono/node-server";
+
+dotenv.config({ path: path.resolve(process.cwd(), "../../.env") });
 import { Hono } from "hono";
 import mqtt from "mqtt";
 
@@ -98,7 +102,7 @@ app.get("/api/aqi/predictions", (c) => c.json({
 }));
 app.get("/", (c) => c.json({ name: "EVS0 Dashboard API", docs: ["/api/health", "/api/devices", "/api/readings/latest", "/api/readings/history", "/api/aqi/current", "/api/aqi/predictions"] }));
 
-const port = Number(process.env.PORT || 3002);
-serve({ fetch: app.fetch, port, hostname: process.env.HOST || "0.0.0.0" }, info => {
+const port = Number(process.env.API_PORT || 3002);
+serve({ fetch: app.fetch, port, hostname: process.env.API_HOST || "0.0.0.0" }, info => {
   console.log(`[API] Hono listening on http://localhost:${info.port}`);
 });
