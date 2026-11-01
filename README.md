@@ -97,6 +97,14 @@ pnpm device:provision:mqtt -- --port /dev/ttyUSB0
 
 The script sends the configuration to the connected ESP32 at 115200 baud. The firmware CLI also supports `mqtt status` and `mqtt diagnose`. The diagnostic checks Wi-Fi state, required NVS fields, embedded CA presence, DNS resolution, and TCP reachability of the configured broker port. A successful TCP check does not prove TLS certificate validation or MQTT authentication. The CLI also supports `mqtt set-server`, `mqtt set-protocol`, `mqtt set-auth`, `mqtt clear-auth`, `mqtt enable`, and `mqtt disable`.
 
+## Firmware version and build timestamp
+
+The firmware version is defined by `FIRMWARE_VERSION` in `firmware/cuspnode_mq135/cuspnode_mq135.ino`. Increment it when publishing a new firmware release. The compiler fills `FIRMWARE_BUILD_DATE` and `FIRMWARE_BUILD_TIME` using Arduino/C++ `__DATE__` and `__TIME__` macros.
+
+The version and build timestamp are printed at boot and in the Serial `status` output. They are also returned by `GET /api/health` under the `firmware` object.
+
+**Timestamp meaning:** this is the local date/time of compilation on the computer that built the sketch. It is not an exact firmware upload/flash timestamp. Arduino firmware cannot determine when it was uploaded unless an upload-time value is explicitly supplied or a trusted clock and persistent first-boot timestamp mechanism are added.
+
 ## ESP32 MQTT TLS CA certificate
 
 The ESP32 firmware includes the public CA certificate used to validate the broker's TLS certificate. The PEM file is stored separately from the firmware source and converted into a C++ header before compiling.
