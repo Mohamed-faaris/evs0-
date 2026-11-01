@@ -49,6 +49,29 @@ type CarbonSummary = {
   };
 };
 
+type ForecastModel = { name: string; version?: string; alpha: number; samples: number };
+type SensorResponseForecast = {
+  available: boolean;
+  reason?: string;
+  target?: string;
+  model: ForecastModel;
+  data?: { latest_raw_adc: number; smoothed_raw_adc: number; next_reading_estimate_adc: number };
+  note?: string;
+};
+type EnergyForecast = {
+  available: boolean;
+  reason?: string;
+  model: ForecastModel;
+  data?: {
+    smoothed_active_power_w: number;
+    projections: {
+      next_24_hours: { energy_kwh: number; estimated_co2_kg: number };
+      next_7_days: { energy_kwh: number; estimated_co2_kg: number };
+      next_30_days: { energy_kwh: number; estimated_co2_kg: number };
+    };
+  };
+  note?: string;
+};
 type Tab = "air-quality" | "aqi-predictions" | "energy" | "energy-predictions" | "power-map";
 
 const API = import.meta.env.VITE_API_BASE || "";
@@ -62,6 +85,8 @@ export default function App() {
   const [powerMeterReading, setPowerMeterReading] = useState<Reading | null>(null);
   const [powerMeterHistory, setPowerMeterHistory] = useState<Reading[]>([]);
   const [carbonSummary, setCarbonSummary] = useState<CarbonSummary | null>(null);
+  const [sensorForecast, setSensorForecast] = useState<SensorResponseForecast | null>(null);
+  const [energyForecast, setEnergyForecast] = useState<EnergyForecast | null>(null);
   const [devices, setDevices] = useState<Device[]>([]);
   const [apiOnline, setApiOnline] = useState(false);
   const [updated, setUpdated] = useState("");
@@ -76,10 +101,12 @@ export default function App() {
         fetch(API + "/api/devices"),
         fetch(API + "/api/power-meter/latest"),
         fetch(API + "/api/power-meter/history?limit=100"),
-        fetch(API + "/api/power-meter/carbon")
+        fetch(API + "/api/power-meter/carbon"),
+        fetch(API + "/api/aqi/response-forecast"),
+        fetch(API + "/api/power-meter/forecast")
       ]);
       if (!responses.every((response) => response.ok)) throw new Error("API request failed");
-      const [latest, hist, dev, powerLatest, powerHistory, carbon] =
+      const [latest, hist, dev, powerLatest, powerHistory, carbon, sensorModel, energyModel] =
         await Promise.all(responses.map((response) => response.json()));
       setReading(latest.data || null);
       setHistory(hist.data || []);
@@ -87,6 +114,8 @@ export default function App() {
       setPowerMeterReading(powerLatest.data || null);
       setPowerMeterHistory(powerHistory.data || []);
       setCarbonSummary(carbon || null);
+      setSensorForecast(sensorModel || null);
+      setEnergyForecast(energyModel || null);
       setApiOnline(true);
       setUpdated(new Date().toLocaleTimeString());
     } catch {
@@ -112,12 +141,6 @@ export default function App() {
     activePower: r.readings?.active_power_w ?? null
   })), [powerMeterHistory]);
 
-  const averageActivePowerW = useMemo(() => {
-    const samples = powerMeterHistory
-      .map((sample) => sample.readings?.active_power_w)
-      .filter((value): value is number => typeof value === "number" && Number.isFinite(value) && value >= 0);
-    return samples.length ? samples.reduce((sum, value) => sum + value, 0) / samples.length : null;
-  }, [powerMeterHistory]);
 
   const sensorDevices = devices.filter((device) => device.device_id !== POWER_METER_DEVICE_ID);
   const sensorOnline = sensorDevices.some((device) => device.availability?.status === "online");
@@ -130,12 +153,6 @@ export default function App() {
   const sessionCarbonKg = carbonSummary?.data?.estimated_co2_kg ?? (
     sessionEnergyKwh == null ? null : sessionEnergyKwh * emissionFactor
   );
-  const projectedDailyKwh = averageActivePowerW == null ? null : averageActivePowerW * 24 / 1000;
-  const projectedDailyCarbonKg = projectedDailyKwh == null ? null : projectedDailyKwh * emissionFactor;
-  const projectedWeeklyKwh = projectedDailyKwh == null ? null : projectedDailyKwh * 7;
-  const projectedWeeklyCarbonKg = projectedDailyCarbonKg == null ? null : projectedDailyCarbonKg * 7;
-  const projectedMonthlyKwh = projectedDailyKwh == null ? null : projectedDailyKwh * 30;
-  const projectedMonthlyCarbonKg = projectedDailyCarbonKg == null ? null : projectedDailyCarbonKg * 30;
 
   return <main className="shell">
     <header className="topbar">
@@ -198,7 +215,7 @@ export default function App() {
       </div>
       <div className="sourcefoot">AIR QUALITY SOURCE: MQTT · {reading?.device_id || "NO SENSOR DEVICE"} · {reading ? "RECEIVED " + new Date(reading.received_at).toLocaleString() : "NO READINGS RECEIVED"}</div>
     </section> : tab === "aqi-predictions" ? <section className="content">
-      <div className="sectionhead"><div><div className="eyebrow">AIR QUALITY FORECASTING</div><h2>AQI predictions</h2></div><span className="status muted"><i/> MODEL NOT CONFIGURED</span></div>
+      <div className="sectionhead"><div><div className="eyebrow">AIR QUALITY FORECASTING</div><h2>AQI predictions</h2></div><span className="status muted"><i/> AQI MODEL BLOCKED · SENSOR INPUTS</span></div>
       <article className="prediction">
         <div className="predictionicon"><BrainCircuit size={26}/></div>
         <div>
@@ -212,6 +229,22 @@ export default function App() {
         <article className="metric"><div className="metriclabel">6 HOUR AQI</div><div className="metricvalue">—</div><div className="metricfoot">Not available</div></article>
         <article className="metric"><div className="metriclabel">24 HOUR AQI</div><div className="metricvalue">—</div><div className="metricfoot">Not available</div></article>
       </div>
+      <article className="prediction model-prediction">
+        <div className="predictionicon"><Activity size={26}/></div>
+        <div className="model-copy">
+          <div className="eyebrow">LIGHTWEIGHT SENSOR MODEL · NOT AQI</div>
+          <h3>MQ-135 response baseline</h3>
+          <p>A simple exponential smoothing (SES) model estimates the next raw ADC response from recent MQTT samples. This is useful for monitoring sensor drift, but it does not predict AQI or pollutant concentration.</p>
+          {sensorForecast?.available && sensorForecast.data ? <>
+            <div className="metrics model-metrics">
+              <article className="metric"><div className="metriclabel">LATEST RAW ADC</div><div className="metricvalue">{sensorForecast.data.latest_raw_adc}</div></article>
+              <article className="metric"><div className="metriclabel">SMOOTHED BASELINE</div><div className="metricvalue">{fmt(sensorForecast.data.smoothed_raw_adc, 1)}</div></article>
+              <article className="metric"><div className="metriclabel">NEXT READING ESTIMATE</div><div className="metricvalue">{fmt(sensorForecast.data.next_reading_estimate_adc, 1)}</div></article>
+            </div>
+            <div className="model-meta">MODEL: SES v{sensorForecast.model.version || "1.0"} · α {fmt(sensorForecast.model.alpha, 2)} · {sensorForecast.model.samples} SAMPLES</div>
+          </> : <div className="model-wait">{sensorForecast?.reason || "Waiting for enough valid MQ-135 samples to initialize the sensor-response model."}</div>}
+        </div>
+      </article>
     </section> : tab === "energy" ? <section className="content">
       <div className="sectionhead"><div><div className="eyebrow">ELECTRICAL TELEMETRY · MQTT DEVICE</div><h2>Power meter</h2></div><span className={powerMeterOnline ? "status good" : "status muted"}><i/>{powerMeterOnline ? "METER ONLINE" : "WAITING FOR METER"}</span></div>
       <div className="power-sim-notice">SIMULATED SINGLE-PHASE VALUES · NOT A PHYSICAL METER</div>
@@ -265,24 +298,25 @@ export default function App() {
       </section>
       <div className="sourcefoot">POWER SOURCE: MQTT · {powerMeterReading?.device_id || POWER_METER_DEVICE_ID} · {powerMeterReading ? "RECEIVED " + new Date(powerMeterReading.received_at).toLocaleString() : "NO METER READINGS RECEIVED"}</div>
     </section> : tab === "energy-predictions" ? <section className="content">
-      <div className="sectionhead"><div><div className="eyebrow">ENERGY USE OUTLOOK</div><h2>Energy & emissions forecast</h2></div><span className="status muted"><i/> BASELINE PROJECTION</span></div>
+      <div className="sectionhead"><div><div className="eyebrow">ENERGY USE OUTLOOK</div><h2>Energy & emissions forecast</h2></div><span className={energyForecast?.available ? "status good" : "status muted"}><i/>{energyForecast?.available ? "SES MODEL READY" : "WAITING FOR DATA"}</span></div>
       <article className="prediction energy-prediction">
         <div className="predictionicon"><TrendingUp size={26}/></div>
         <div>
-          <h3>Usage-based projection, not an AI model</h3>
-          <p>These projections extrapolate the average active power from the latest {powerMeterHistory.length} retained meter samples. They assume the recent load continues unchanged; they are not machine-learning predictions or a guarantee of future consumption.</p>
-          <div className="requirements"><span>INPUT / RECENT MQTT POWER SAMPLES</span><span>METHOD / MEAN LOAD × TIME</span><span>FACTOR / {fmt(emissionFactor, 3)} KG CO₂/KWH</span></div>
+          <div className="eyebrow">LIGHTWEIGHT ENERGY MODEL</div>
+          <h3>Simple exponential smoothing (SES)</h3>
+          <p>The API smooths recent MQTT active-power readings using configurable α and projects a flat load into each horizon. It is a statistical baseline, not a trained AI/ML model; it assumes recent demand remains representative.</p>
+          <div className="requirements"><span>INPUT / MQTT ACTIVE POWER</span><span>MODEL / SES</span><span>FACTOR / {fmt(emissionFactor, 3)} KG CO₂/KWH</span></div>
         </div>
       </article>
-      {averageActivePowerW == null ? <div className="empty forecast-empty">Waiting for power-meter history before generating a usage projection.</div> : <>
-        <div className="forecast-assumption"><Clock size={16}/> Recent average active power: <strong>{fmt(averageActivePowerW, 1)} W</strong> · {powerMeterHistory.length} samples</div>
+      {energyForecast?.available && energyForecast.data ? <>
+        <div className="forecast-assumption"><Clock size={16}/> Smoothed active power: <strong>{fmt(energyForecast.data.smoothed_active_power_w, 1)} W</strong> · {energyForecast.model.samples} samples · α {fmt(energyForecast.model.alpha, 2)}</div>
         <div className="metrics energy-forecast-metrics">
-          <article className="metric"><div className="metriclabel">NEXT 24 HOURS</div><div className="metricvalue">{fmt(projectedDailyKwh, 2)}<small> kWh</small></div><div className="metricfoot">{fmt(projectedDailyCarbonKg, 3)} kg CO₂ estimated</div></article>
-          <article className="metric"><div className="metriclabel">NEXT 7 DAYS</div><div className="metricvalue">{fmt(projectedWeeklyKwh, 2)}<small> kWh</small></div><div className="metricfoot">{fmt(projectedWeeklyCarbonKg, 3)} kg CO₂ estimated</div></article>
-          <article className="metric"><div className="metriclabel">NEXT 30 DAYS</div><div className="metricvalue">{fmt(projectedMonthlyKwh, 2)}<small> kWh</small></div><div className="metricfoot">{fmt(projectedMonthlyCarbonKg, 3)} kg CO₂ estimated</div></article>
+          <article className="metric"><div className="metriclabel">NEXT 24 HOURS</div><div className="metricvalue">{fmt(energyForecast.data.projections.next_24_hours.energy_kwh, 2)}<small> kWh</small></div><div className="metricfoot">{fmt(energyForecast.data.projections.next_24_hours.estimated_co2_kg, 3)} kg CO₂ estimated</div></article>
+          <article className="metric"><div className="metriclabel">NEXT 7 DAYS</div><div className="metricvalue">{fmt(energyForecast.data.projections.next_7_days.energy_kwh, 2)}<small> kWh</small></div><div className="metricfoot">{fmt(energyForecast.data.projections.next_7_days.estimated_co2_kg, 3)} kg CO₂ estimated</div></article>
+          <article className="metric"><div className="metriclabel">NEXT 30 DAYS</div><div className="metricvalue">{fmt(energyForecast.data.projections.next_30_days.energy_kwh, 2)}<small> kWh</small></div><div className="metricfoot">{fmt(energyForecast.data.projections.next_30_days.estimated_co2_kg, 3)} kg CO₂ estimated</div></article>
         </div>
-      </>}
-      <p className="carbon-note">Emissions projections use the same India national-grid factor as the Energy & Carbon page. They estimate grid-related CO₂ only and do not represent offsets or verified reductions.</p>
+      </> : <div className="model-wait">{energyForecast?.reason || "Waiting for enough valid MQTT power readings to initialize the energy forecast."}</div>}
+      <p className="carbon-note">These are baseline energy-use and grid-CO₂ projections, not offsets or verified emissions reductions. The model uses in-memory API history, which resets when the API restarts.</p>
     </section> : <section className="content power-map-content">
       <div className="sectionhead">
         <div><div className="eyebrow">INDIA ELECTRICITY INFRASTRUCTURE</div><h2>Power Map of India</h2></div>
