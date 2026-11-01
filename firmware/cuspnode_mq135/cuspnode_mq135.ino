@@ -13,6 +13,7 @@
 #include <WiFiClientSecure.h>
 #include <MQTT.h>
 #include <time.h>
+#include <esp_sntp.h>
 
 // Increment this for each firmware release. Build date/time are set by the compiler.
 #define FIRMWARE_VERSION "1.1.0"
