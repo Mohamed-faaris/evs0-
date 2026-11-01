@@ -1,0 +1,8 @@
+# Local environment configuration
+.env
+.env.*
+!.env.example
+
+# Node.js dependencies and logs
+node_modules/
+npm-debug.log*
