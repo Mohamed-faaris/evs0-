@@ -4,11 +4,17 @@
   "private": true,
   "packageManager": "pnpm@10.20.0",
   "scripts": {
-    "dev": "pnpm --parallel --filter @evs0/api --filter @evs0/web dev",
-    "dev:api": "pnpm --filter @evs0/api dev",
-    "dev:web": "pnpm --filter @evs0/web dev",
-    "dev:mock": "pnpm --filter cuspnode-mock-server dev",
-    "start:mock": "pnpm --filter cuspnode-mock-server start",
-    "build": "pnpm --filter @evs0/api --filter @evs0/web build"
+    "dev": "turbo run dev --parallel",
+    "dev:dashboard": "turbo run dev --parallel --filter=@evs0/api --filter=@evs0/web",
+    "dev:api": "turbo run dev --filter=@evs0/api",
+    "dev:web": "turbo run dev --filter=@evs0/web",
+    "dev:mock": "turbo run dev --filter=cuspnode-mock-server",
+    "start:api": "turbo run start --filter=@evs0/api",
+    "start:mock": "turbo run start --filter=cuspnode-mock-server",
+    "build": "turbo run build",
+    "typecheck": "turbo run typecheck"
+  },
+  "devDependencies": {
+    "turbo": "^2.5.6"
   }
 }
