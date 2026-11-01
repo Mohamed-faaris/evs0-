@@ -12,6 +12,7 @@ type Telemetry = {
   sensor?: string;
   device_type?: "sensor" | "power_meter";
   meter_model?: string;
+  session_id?: string;
   timestamp?: string | null;
   uptime_seconds?: number;
   sequence?: number;
@@ -38,6 +39,7 @@ type DeviceState = {
   device_id: string;
   state?: string;
   uptime_seconds?: number;
+  session_id?: string;
   network?: { wifi_connected?: boolean; wifi_ssid?: string; hotspot_active?: boolean };
   sensor?: { model?: string; valid?: boolean };
   mqtt?: { connected?: boolean };
@@ -218,7 +220,9 @@ app.get("/api/devices", (c) => {
     device_id,
     state: states.get(device_id) || null,
     availability: availability.get(device_id) || null,
-    latest: [...readings].reverse().find((reading) => reading.device_id === device_id) || null
+    latest: device_id === POWER_METER_DEVICE_ID
+      ? getCurrentPowerMeterReadings().at(-1) || null
+      : [...readings].reverse().find((reading) => reading.device_id === device_id) || null
   })));
 });
 app.get("/api/readings/latest", (c) => {
@@ -227,34 +231,89 @@ app.get("/api/readings/latest", (c) => {
   return c.json({ data: latest });
 });
 app.get("/api/power-meter/latest", (c) => {
-  const latest = [...readings].reverse().find((reading) =>
-    reading.device_id === POWER_METER_DEVICE_ID && reading.device_type === "power_meter"
-  ) || null;
+  const latest = getCurrentPowerMeterReadings().at(-1) || null;
   return c.json({ data: latest });
 });
 
-const configuredGridEmissionFactor = Number(process.env.GRID_EMISSION_FACTOR_KG_CO2_PER_KWH || "0.675");
-const GRID_EMISSION_FACTOR_KG_CO2_PER_KWH =
-  Number.isFinite(configuredGridEmissionFactor) && configuredGridEmissionFactor > 0
-    ? configuredGridEmissionFactor
-    : 0.675;
+const DEFAULT_GRID_EMISSION_FACTOR_KG_CO2_PER_KWH = 0.675;
+const rawGridEmissionFactor = process.env.GRID_EMISSION_FACTOR_KG_CO2_PER_KWH?.trim();
+const configuredGridEmissionFactor = rawGridEmissionFactor ? Number(rawGridEmissionFactor) : DEFAULT_GRID_EMISSION_FACTOR_KG_CO2_PER_KWH;
+if (!Number.isFinite(configuredGridEmissionFactor) || configuredGridEmissionFactor <= 0) {
+  throw new Error("GRID_EMISSION_FACTOR_KG_CO2_PER_KWH must be a finite number greater than zero.");
+}
+const GRID_EMISSION_FACTOR_KG_CO2_PER_KWH = configuredGridEmissionFactor;
+const isDefaultGridEmissionFactor = GRID_EMISSION_FACTOR_KG_CO2_PER_KWH === DEFAULT_GRID_EMISSION_FACTOR_KG_CO2_PER_KWH;
+const GRID_EMISSION_FACTOR_SOURCE = process.env.GRID_EMISSION_FACTOR_SOURCE?.trim() ||
+  (isDefaultGridEmissionFactor ? "Central Electricity Authority (CEA), CO2 Baseline Database v22.0" : "Custom configured emission factor");
+const GRID_EMISSION_FACTOR_FISCAL_YEAR = process.env.GRID_EMISSION_FACTOR_FISCAL_YEAR?.trim() ||
+  (isDefaultGridEmissionFactor ? "FY2025-26" : "CUSTOM");
+const GRID_EMISSION_FACTOR_SCOPE = process.env.GRID_EMISSION_FACTOR_SCOPE?.trim() ||
+  (isDefaultGridEmissionFactor
+    ? "India national-grid weighted-average electricity factor; CO2 estimate only"
+    : "Operator-defined factor; source and accounting boundary require verification");
+
+const POWER_METER_MAX_AGE_MS = resolveBoundedInteger(
+  process.env.POWER_METER_MAX_AGE_SECONDS,
+  20,
+  5,
+  3600
+) * 1000;
+
+function isCurrentPowerMeterReading(reading: Telemetry): boolean {
+  if (
+    reading.device_id !== POWER_METER_DEVICE_ID ||
+    reading.device_type !== "power_meter" ||
+    reading.valid === false
+  ) return false;
+
+  const meterState = states.get(POWER_METER_DEVICE_ID);
+  const currentSessionId = meterState?.session_id;
+  if (typeof currentSessionId === "string" && currentSessionId.length > 0 && reading.session_id !== currentSessionId) {
+    return false;
+  }
+
+  if (availability.get(POWER_METER_DEVICE_ID)?.status !== "online") return false;
+
+  const receivedAt = Date.parse(reading.received_at);
+  const ageMs = Date.now() - receivedAt;
+  return Number.isFinite(receivedAt) && ageMs >= 0 && ageMs <= POWER_METER_MAX_AGE_MS;
+}
+
+function getCurrentPowerMeterReadings(): Telemetry[] {
+  const deduplicated = new Map<string, Telemetry>();
+  for (const reading of readings) {
+    if (!isCurrentPowerMeterReading(reading)) continue;
+    const session = reading.session_id || "legacy";
+    const sampleKey = typeof reading.sequence === "number" && Number.isFinite(reading.sequence)
+      ? session + ":seq:" + reading.sequence
+      : typeof reading.timestamp === "string" && reading.timestamp
+        ? session + ":timestamp:" + reading.timestamp
+        : session + ":received:" + reading.received_at;
+    deduplicated.set(sampleKey, reading);
+  }
+  return [...deduplicated.values()];
+}
 
 app.get("/api/power-meter/carbon", (c) => {
-  const latest = [...readings].reverse().find((reading) =>
-    reading.device_id === POWER_METER_DEVICE_ID && reading.device_type === "power_meter"
-  ) || null;
-  const energyKwh = latest?.readings?.energy_kwh;
+  const latest = getCurrentPowerMeterReadings().at(-1) || null;
+  const rawEnergyKwh = latest?.readings?.energy_kwh;
+  const energyKwh = typeof rawEnergyKwh === "number" && Number.isFinite(rawEnergyKwh) && rawEnergyKwh >= 0
+    ? rawEnergyKwh
+    : null;
+
   return c.json({
+    available: energyKwh !== null,
+    reason: energyKwh === null ? "Waiting for a fresh, valid power-meter reading from the current meter session." : null,
     data: {
       device_id: POWER_METER_DEVICE_ID,
-      energy_kwh: typeof energyKwh === "number" && Number.isFinite(energyKwh) ? energyKwh : null,
+      session_id: latest?.session_id || null,
+      last_received_at: latest?.received_at || null,
+      energy_kwh: energyKwh,
       emission_factor_kg_co2_per_kwh: GRID_EMISSION_FACTOR_KG_CO2_PER_KWH,
-      estimated_co2_kg: typeof energyKwh === "number" && Number.isFinite(energyKwh)
-        ? energyKwh * GRID_EMISSION_FACTOR_KG_CO2_PER_KWH
-        : null,
-      factor_fiscal_year: "FY2025-26",
-      factor_source: "Central Electricity Authority (CEA), CO2 Baseline Database v22.0",
-      factor_scope: "India national-grid weighted-average electricity factor; CO2 estimate only"
+      estimated_co2_kg: energyKwh === null ? null : energyKwh * GRID_EMISSION_FACTOR_KG_CO2_PER_KWH,
+      factor_fiscal_year: GRID_EMISSION_FACTOR_FISCAL_YEAR,
+      factor_source: GRID_EMISSION_FACTOR_SOURCE,
+      factor_scope: GRID_EMISSION_FACTOR_SCOPE
     }
   });
 });
@@ -262,9 +321,7 @@ app.get("/api/power-meter/carbon", (c) => {
 app.get("/api/power-meter/history", (c) => {
   const requestedLimit = Number(c.req.query("limit") || 100);
   const limit = Number.isFinite(requestedLimit) ? Math.min(Math.max(requestedLimit, 1), 1000) : 100;
-  const data = readings
-    .filter((reading) => reading.device_id === POWER_METER_DEVICE_ID && reading.device_type === "power_meter")
-    .slice(-limit);
+  const data = getCurrentPowerMeterReadings().slice(-limit);
   return c.json({ data });
 });
 app.get("/api/readings/history", (c) => {
@@ -303,8 +360,8 @@ app.get("/api/aqi/response-forecast", (c) => {
 });
 
 app.get("/api/power-meter/forecast", (c) => {
-  const samples = readings
-    .filter((reading) => reading.device_id === POWER_METER_DEVICE_ID && reading.device_type === "power_meter")
+  const currentMeterReadings = getCurrentPowerMeterReadings();
+  const samples = currentMeterReadings
     .map((reading) => reading.readings?.active_power_w)
     .filter((value): value is number => typeof value === "number" && Number.isFinite(value) && value >= 0)
     .slice(-FORECAST_WINDOW_SAMPLES);
@@ -312,7 +369,9 @@ app.get("/api/power-meter/forecast", (c) => {
   if (smoothedPower === null) {
     return c.json({
       available: false,
-      reason: `Need at least ${FORECAST_MIN_SAMPLES} valid power samples; currently have ${samples.length}.`,
+      reason: currentMeterReadings.length === 0
+        ? "No fresh, valid power-meter samples are available for the current online meter session."
+        : `Need at least ${FORECAST_MIN_SAMPLES} valid power samples; currently have ${samples.length}.`,
       model: { name: "simple_exponential_smoothing", alpha: ENERGY_FORECAST_ALPHA, samples: samples.length }
     });
   }
