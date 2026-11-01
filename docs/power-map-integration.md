@@ -33,11 +33,12 @@ The same default is used when the variable is omitted. The proxy requires HTTPS 
 
 ## Proxy behaviour
 
-- Only `GET` and `HEAD` requests are allowed.
-- The Hono server forwards the request path and query string to the configured upstream and streams large assets (especially GeoJSON) back without buffering the full file in API memory.
-- It preserves content type, cache-control, ETag, last-modified, and expiry headers.
-- Upstream failures return HTTP 502 with a small JSON error.
-- The React iframe points to `/api/power-map/`; the Vite development server already proxies `/api/*` to the Hono API on port 3002.
+- Map resources are read-only: `GET` and `HEAD` are proxied; `OPTIONS` is answered locally for sandboxed cross-origin asset requests; other methods return 405.
+- The Hono server forwards the request path and query string and streams large assets (especially GeoJSON) without buffering the full response in API memory.
+- It forwards `If-None-Match` and `If-Modified-Since` validators, plus range headers, and preserves content type, cache-control, ETag, last-modified, expiry, and range response metadata.
+- Same-origin HTTPS redirects may be followed up to three hops. Redirects to any other origin or protocol are blocked to prevent the fixed-host proxy from being used to reach internal or unrelated services.
+- An invalid `POWER_MAP_UPSTREAM` disables only this proxy and returns HTTP 503; it does not prevent the telemetry API from starting. Upstream 5xx/network failures return HTTP 502 with a small JSON error.
+- The iframe uses a sandboxed opaque origin (`allow-scripts allow-forms allow-popups`) so upstream scripts cannot access the EVS0 document, origin storage, or same-origin APIs. Proxy responses allow anonymous cross-origin reads for the iframe's relative scripts and data. The React iframe and full-map link use `VITE_API_BASE` when configured. The Vite development server already proxies `/api/*` to the Hono API on port 3002.
 
 The upstream map loads some third-party resources directly: MapLibre/three.js from CDNs, vector tiles and glyphs, weather data, fonts, and satellite/terrain tiles. Those providers must continue to support browser CORS. EVS0's proxy removes the cross-origin dependency on the Reclaim Chennai origin; it does not proxy every unrelated third-party provider.
 
