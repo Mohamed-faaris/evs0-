@@ -1,15 +1,14 @@
-
 const http = require("node:http");
 const path = require("node:path");
 const { URL } = require("node:url");
 const dotenv = require("dotenv");
+const { createMqttBridge } = require("./mqtt-client");
 
-// Always load the repository-root .env, regardless of the current working directory.
 dotenv.config({ path: path.resolve(__dirname, "../.env") });
 
 const HOST = process.env.HOST || "127.0.0.1";
 const PORT = Number(process.env.PORT || 3001);
-const DEVICE_ID = "device-001";
+const DEVICE_ID = process.env.DEVICE_ID || "device-001";
 const HOTSPOT_SSID = "cuspnode-mq135";
 const HOTSPOT_IP = "192.168.4.1";
 const MAX_WIFI_NETWORKS = 10;
@@ -29,7 +28,6 @@ const nearbyNetworks = [
 let wifiConnected = true;
 let connectedSSID = "faaris";
 let sensorSequence = 0;
-
 const uptimeSeconds = () => Math.floor((Date.now() - startedAt) / 1000);
 
 function readSensor() {
@@ -44,8 +42,50 @@ function readSensor() {
   };
 }
 
+function buildTelemetry() {
+  const sensor = readSensor();
+  return {
+    schema_version: 1,
+    device_id: DEVICE_ID,
+    sensor: "MQ-135",
+    timestamp: new Date().toISOString(),
+    uptime_seconds: uptimeSeconds(),
+    sequence: sensorSequence,
+    readings: {
+      raw_adc: sensor.raw_adc,
+      adc_pin_voltage_v: sensor.adc_voltage_v,
+      sensor_ao_voltage_v: sensor.estimated_sensor_ao_voltage_v,
+      ppm: null,
+    },
+    valid: sensor.valid,
+  };
+}
+
+function buildDeviceState() {
+  return {
+    schema_version: 1,
+    device_id: DEVICE_ID,
+    state: wifiConnected ? "WIFI_CONNECTED" : "NO_WIFI",
+    uptime_seconds: uptimeSeconds(),
+    network: {
+      wifi_connected: wifiConnected,
+      wifi_ssid: wifiConnected ? connectedSSID : "",
+      hotspot_active: true,
+    },
+    sensor: { model: "MQ-135", valid: true },
+    mqtt: { connected: mqttBridge.getStatus().connected },
+  };
+}
+
+const mqttBridge = createMqttBridge({
+  deviceId: DEVICE_ID,
+  getTelemetry: buildTelemetry,
+  getState: buildDeviceState,
+});
+
 function health() {
   const sensor = readSensor();
+  const mqtt = mqttBridge.getStatus();
   return {
     status: "ok",
     device_id: DEVICE_ID,
@@ -62,7 +102,19 @@ function health() {
       raw_adc: sensor.raw_adc,
       adc_voltage_v: sensor.adc_voltage_v,
     },
-    mqtt: { configured: false, connected: false },
+    mqtt: {
+      configured: mqtt.configured,
+      connected: mqtt.connected,
+      reconnecting: mqtt.reconnecting,
+      protocol: mqtt.protocol,
+      broker: mqtt.broker,
+      client_id: mqtt.client_id,
+      auth_configured: mqtt.auth_configured,
+      last_connected_at: mqtt.last_connected_at,
+      last_publish_at: mqtt.last_publish_at,
+      last_error: mqtt.last_error,
+      publish_interval_ms: mqtt.publish_interval_ms,
+    },
   };
 }
 
@@ -127,49 +179,223 @@ async function readJson(req) {
 
 function sendPortal(res) {
   const html = `<!doctype html>
-<html lang="en"><head><meta charset="utf-8">
+<html lang="en" data-theme="light">
+<head>
+<meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>CuspNode Mock Server</title>
+<meta name="color-scheme" content="light dark">
+<title>CuspNode — Mock Device</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Pixelify+Sans:wght@700&display=swap" rel="stylesheet">
 <style>
-body{font:15px system-ui;background:#0b1220;color:#e5e7eb;margin:0;padding:28px}
-main{max-width:850px;margin:auto}section{background:#151f30;border:1px solid #334155;border-radius:12px;padding:18px;margin:14px 0}
-pre{white-space:pre-wrap;overflow-wrap:anywhere;color:#bae6fd}a{color:#7dd3fc}
-input,button{padding:10px;margin:5px 4px 5px 0;border-radius:7px;border:1px solid #475569}
-button{background:#0284c7;color:white;border:0;cursor:pointer}
-</style></head><body><main>
-<h1>CuspNode MQ-135 — Mock Device</h1>
-<p>Simulated data only. No physical ESP32 or MQ-135 is connected.</p>
-<section><h2>Health</h2><pre id="health">Loading...</pre></section>
-<section><h2>MQ-135</h2><pre id="sensor">Loading...</pre></section>
-<section><h2>Saved Wi-Fi</h2><pre id="wifi">Loading...</pre>
-<form id="add"><input id="ssid" placeholder="SSID" maxlength="32" required>
-<input id="password" placeholder="Password" type="password" maxlength="63">
-<button>Save network</button></form>
-<form id="remove"><input id="removeSsid" placeholder="SSID to remove" required>
-<button>Remove network</button></form></section>
-<section><h2>API</h2>
-<p><a href="/api/health">/api/health</a> · <a href="/api/mq135">/api/mq135</a></p>
-<p><a href="/api/wifi">/api/wifi</a> · <a href="/api/wifi/scan">/api/wifi/scan</a></p></section>
-</main><script>
+:root{
+  color-scheme:light;
+  --bg:#f4f1ea;--panel:#fff;--cell:#f3efe6;--cell-2:#d9d3c5;
+  --edge:#1f2229;--text:#1b1d22;--text-2:#4a505c;--text-3:#5c6270;
+  --accent:#8a5a00;--accent-bg:#ffd84a;--link:#1f5fae;--warn:#c42b2b;
+  --warn-bg:#fdeaea;--ok:#2e7d32;--track:#e7e2d6;
+  --stone:#5b6070;--stone-hi:#8a90a0;--stone-lo:#3a3e49;
+  --stone-on:#3d6fc2;--stone-on-hi:#6f99e0;--stone-on-lo:#274c8c;
+  --bevel:inset 2px 2px 0 var(--stone-hi),inset -2px -2px 0 var(--stone-lo);
+  --shadow:3px 3px 0 rgba(31,34,41,.25);
+}
+html[data-theme="dark"]{
+  color-scheme:dark;
+  --bg:#0b0d14;--panel:#141824;--cell:#1d2232;--cell-2:#282f44;
+  --edge:#05060a;--text:#f5f1e6;--text-2:#b9c1d3;--text-3:#9aa3bb;
+  --accent:#ffd84a;--accent-bg:#ffd84a;--link:#6cc8ff;--warn:#ff8f87;
+  --warn-bg:#3a1717;--ok:#7ed98b;--track:#262c3e;
+  --stone:#6d7079;--stone-hi:#9ca0a8;--stone-lo:#3d4047;
+  --stone-on:#7e86c9;--stone-on-hi:#a5acdf;--stone-on-lo:#4f5693;
+  --shadow:3px 3px 0 rgba(0,0,0,.45);
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:15px/1.45 Inter,system-ui,sans-serif;font-variant-numeric:tabular-nums}
+button,input{font:inherit}
+a{color:var(--link);text-underline-offset:3px}
+a:hover{text-decoration-thickness:2px}
+button{min-height:44px;padding:9px 14px;color:var(--text);background:var(--stone);border:3px solid var(--edge);box-shadow:var(--bevel);font-weight:700;cursor:pointer}
+button:hover{filter:brightness(1.08)}
+button:active{box-shadow:inset 2px 2px 0 var(--stone-lo),inset -2px -2px 0 var(--stone-hi);transform:translate(1px,1px)}
+button:focus-visible,input:focus-visible,a:focus-visible{outline:3px solid var(--link);outline-offset:2px}
+input{width:100%;min-width:0;min-height:44px;padding:10px 11px;color:var(--text);background:var(--panel);border:3px solid var(--edge);box-shadow:inset 2px 2px 0 var(--cell-2)}
+input::placeholder{color:var(--text-3)}
+.shell{max-width:1180px;margin:0 auto;padding:24px 20px 40px}
+.topbar{display:flex;align-items:flex-start;justify-content:space-between;gap:18px;padding:18px 0 20px;border-bottom:3px solid var(--edge)}
+.brand{display:flex;align-items:flex-start;gap:14px;min-width:0}
+.brand-mark{display:grid;place-items:center;flex:0 0 42px;height:42px;background:var(--accent-bg);border:3px solid var(--edge);box-shadow:var(--shadow);color:#1b1d22;font-weight:800;font-size:20px}
+h1{margin:0;font:700 28px/1.1 "Pixelify Sans",Inter,sans-serif;letter-spacing:.01em}
+.subtitle{margin:7px 0 0;color:var(--text-2);font-size:13px}
+.top-actions{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.simulated{display:inline-flex;align-items:center;gap:7px;padding:6px 9px;background:var(--warn-bg);border:2px solid var(--warn);color:var(--warn);font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.04em}
+.simulated::before{content:"";width:7px;height:7px;background:currentColor}
+#themeToggle{white-space:nowrap}
+.overview{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin:18px 0}
+.metric{min-width:0;background:var(--panel);border:2px solid var(--edge);box-shadow:inset 2px 2px 0 var(--cell-2);padding:13px 14px}
+.metric-label{color:var(--text-3);font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.07em}
+.metric-value{display:block;margin-top:5px;font-size:20px;font-weight:800;overflow-wrap:anywhere}
+.metric-note{margin-top:2px;color:var(--text-2);font-size:12px}
+.grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}
+section{min-width:0;padding:15px;background:var(--panel);border:2px solid var(--edge);box-shadow:var(--shadow)}
+section.wide{grid-column:1/-1}
+.section-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:0 0 12px}
+h2{margin:0;font-size:13px;line-height:1.3;font-weight:800;letter-spacing:.07em;text-transform:uppercase}
+.section-tag{padding:3px 7px;background:var(--cell);border:1px solid var(--cell-2);color:var(--text-2);font-size:11px;font-weight:700}
+pre{margin:0;max-height:340px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;padding:12px;background:var(--cell);border:1px solid var(--cell-2);color:var(--text);font:12px/1.55 ui-monospace,SFMono-Regular,Consolas,monospace}
+.forms{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin-top:12px}
+form{display:flex;flex-wrap:wrap;gap:7px;align-items:center}
+form input{flex:1 1 150px}
+form button{flex:0 0 auto}
+.api-links{display:flex;gap:12px;flex-wrap:wrap}
+.api-links a{overflow-wrap:anywhere}
+.footnote{margin:18px 0 0;color:var(--text-3);font-size:12px}
+@media(max-width:820px){
+  .shell{padding:16px 12px 28px}
+  .topbar{align-items:flex-start}
+  .grid{grid-template-columns:1fr}
+  section.wide{grid-column:auto}
+}
+@media(max-width:560px){
+  .topbar{flex-direction:column}
+  .top-actions{width:100%;justify-content:space-between}
+  .overview{grid-template-columns:1fr}
+  .forms{grid-template-columns:1fr}
+}
+@media(prefers-reduced-motion:reduce){*,*::before,*::after{scroll-behavior:auto!important;transition:none!important}}
+</style>
+</head>
+<body>
+<main class="shell">
+  <header class="topbar">
+    <div class="brand">
+      <div class="brand-mark" aria-hidden="true">C</div>
+      <div>
+        <h1>CuspNode / Mock Device</h1>
+        <p class="subtitle">MQ-135 telemetry simulator · <span id="deviceId">device-001</span></p>
+      </div>
+    </div>
+    <div class="top-actions">
+      <span class="simulated">Simulated data</span>
+      <button id="themeToggle" type="button" aria-label="Switch colour theme">Dark theme</button>
+    </div>
+  </header>
+
+  <div class="overview" aria-label="Current device summary">
+    <div class="metric"><span class="metric-label">Device state</span><strong class="metric-value" id="stateValue">Loading</strong><div class="metric-note">Simulated network state</div></div>
+    <div class="metric"><span class="metric-label">MQTT session</span><strong class="metric-value" id="mqttValue">Loading</strong><div class="metric-note" id="mqttNote">Broker connection status</div></div>
+    <div class="metric"><span class="metric-label">MQ-135 raw ADC</span><strong class="metric-value" id="adcValue">—</strong><div class="metric-note">12-bit simulated reading</div></div>
+  </div>
+
+  <div class="grid">
+    <section>
+      <div class="section-head"><h2>Device health</h2><span class="section-tag">HTTP API</span></div>
+      <pre id="health">Loading...</pre>
+    </section>
+    <section>
+      <div class="section-head"><h2>MQ-135 telemetry</h2><span class="section-tag">Simulated</span></div>
+      <pre id="sensor">Loading...</pre>
+    </section>
+    <section>
+      <div class="section-head"><h2>MQTT bridge</h2><span class="section-tag">EMQX / broker</span></div>
+      <pre id="mqtt">Loading...</pre>
+    </section>
+    <section>
+      <div class="section-head"><h2>Saved Wi-Fi networks</h2><span class="section-tag">In-memory mock</span></div>
+      <pre id="wifi">Loading...</pre>
+      <div class="forms">
+        <form id="add">
+          <input id="ssid" placeholder="Network SSID" maxlength="32" aria-label="Network SSID" required>
+          <input id="password" placeholder="Password" type="password" maxlength="63" aria-label="Network password">
+          <button type="submit">Save network</button>
+        </form>
+        <form id="remove">
+          <input id="removeSsid" placeholder="SSID to remove" aria-label="SSID to remove" required>
+          <button type="submit">Remove network</button>
+        </form>
+      </div>
+    </section>
+    <section class="wide">
+      <div class="section-head"><h2>API endpoints</h2><span class="section-tag">Local development</span></div>
+      <div class="api-links">
+        <a href="/api/health">/api/health</a>
+        <a href="/api/mq135">/api/mq135</a>
+        <a href="/api/mqtt">/api/mqtt</a>
+        <a href="/api/wifi">/api/wifi</a>
+        <a href="/api/wifi/scan">/api/wifi/scan</a>
+      </div>
+    </section>
+  </div>
+  <p class="footnote">No physical ESP32 or MQ-135 is connected. Sensor, Wi-Fi and hotspot values are simulated; MQTT is a real broker connection when configured.</p>
+</main>
+<script>
+const root=document.documentElement;
+const themeButton=document.querySelector("#themeToggle");
+function applyTheme(theme){
+  root.dataset.theme=theme;
+  themeButton.textContent=theme==="dark"?"Light theme":"Dark theme";
+  themeButton.setAttribute("aria-label",theme==="dark"?"Switch to light theme":"Switch to dark theme");
+}
+const savedTheme=localStorage.getItem("cuspnode-theme");
+applyTheme(savedTheme||(matchMedia("(prefers-color-scheme: dark)").matches?"dark":"light"));
+themeButton.addEventListener("click",()=>{
+  const next=root.dataset.theme==="dark"?"light":"dark";
+  localStorage.setItem("cuspnode-theme",next);
+  applyTheme(next);
+});
+async function getJson(path){
+  const response=await fetch(path,{cache:"no-store"});
+  if(!response.ok) throw new Error(path+" returned HTTP "+response.status);
+  return response.json();
+}
 async function refresh(){
- const [h,s,w]=await Promise.all(["/api/health","/api/mq135","/api/wifi"].map(p=>fetch(p).then(r=>r.json())));
- document.querySelector("#health").textContent=JSON.stringify(h,null,2);
- document.querySelector("#sensor").textContent=JSON.stringify(s,null,2);
- document.querySelector("#wifi").textContent=JSON.stringify(w,null,2);
+  try{
+    const [h,s,w,m]=await Promise.all([
+      getJson("/api/health"),getJson("/api/mq135"),getJson("/api/wifi"),getJson("/api/mqtt")
+    ]);
+    document.querySelector("#health").textContent=JSON.stringify(h,null,2);
+    document.querySelector("#sensor").textContent=JSON.stringify(s,null,2);
+    document.querySelector("#wifi").textContent=JSON.stringify(w,null,2);
+    document.querySelector("#mqtt").textContent=JSON.stringify(m,null,2);
+    document.querySelector("#deviceId").textContent=h.device_id||"unknown";
+    document.querySelector("#stateValue").textContent=h.state||"UNKNOWN";
+    document.querySelector("#mqttValue").textContent=m.connected?"CONNECTED":(m.configured?"DISCONNECTED":"NOT CONFIGURED");
+    document.querySelector("#mqttNote").textContent=m.broker||m.last_error||"Broker connection status";
+    document.querySelector("#adcValue").textContent=String(s.raw_adc??"—");
+  }catch(error){
+    document.querySelector("#health").textContent="API unavailable: "+error.message;
+  }
 }
 document.querySelector("#add").addEventListener("submit",async e=>{
- e.preventDefault();
- const r=await fetch("/api/wifi/add",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({ssid:document.querySelector("#ssid").value,password:document.querySelector("#password").value})});
- alert(r.ok?"Network saved":"Could not save network");document.querySelector("#password").value="";refresh();
+  e.preventDefault();
+  const form=e.currentTarget;
+  const response=await fetch("/api/wifi/add",{
+    method:"POST",headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({ssid:document.querySelector("#ssid").value,password:document.querySelector("#password").value})
+  });
+  const data=await response.json();
+  alert(response.ok?"Network saved":"Could not save network: "+(data.message||"unknown error"));
+  document.querySelector("#password").value="";
+  if(response.ok) form.reset();
+  refresh();
 });
 document.querySelector("#remove").addEventListener("submit",async e=>{
- e.preventDefault();
- const r=await fetch("/api/wifi/remove",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({ssid:document.querySelector("#removeSsid").value})});
- alert(r.ok?"Network removed":"Could not remove network");refresh();
+  e.preventDefault();
+  const response=await fetch("/api/wifi/remove",{
+    method:"POST",headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({ssid:document.querySelector("#removeSsid").value})
+  });
+  const data=await response.json();
+  alert(response.ok?"Network removed":"Could not remove network: "+(data.message||"unknown error"));
+  if(response.ok) e.currentTarget.reset();
+  refresh();
 });
-refresh();setInterval(refresh,3000);
-</script></body></html>`;
-  res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+refresh();
+setInterval(refresh,3000);
+</script>
+</body>
+</html>`;
+  res.writeHead(200, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" });
   res.end(html);
 }
 
@@ -188,6 +414,7 @@ const server = http.createServer(async (req, res) => {
   if (req.method === "GET" && url.pathname === "/") return sendPortal(res);
   if (req.method === "GET" && url.pathname === "/api/health") return sendJson(res, 200, health());
   if (req.method === "GET" && url.pathname === "/api/mq135") return sendJson(res, 200, mq135());
+  if (req.method === "GET" && url.pathname === "/api/mqtt") return sendJson(res, 200, mqttBridge.getStatus());
   if (req.method === "GET" && url.pathname === "/api/wifi") return sendJson(res, 200, wifiList());
   if (req.method === "GET" && url.pathname === "/api/wifi/scan") return sendJson(res, 200, wifiScan());
 
@@ -217,6 +444,7 @@ const server = http.createServer(async (req, res) => {
       if (connectedSSID === ssid) {
         wifiConnected = false;
         connectedSSID = "";
+        await mqttBridge.publishState();
       }
       return sendJson(res, 200, { status: "removed" });
     } catch (error) {
@@ -227,8 +455,19 @@ const server = http.createServer(async (req, res) => {
   return sendError(res, 404, "Route not found.");
 });
 
+mqttBridge.start();
+
 server.listen(PORT, HOST, () => {
   console.log("[MOCK] CuspNode mock server listening at http://" + HOST + ":" + PORT);
-  console.log("[MOCK] Endpoints: /api/health /api/mq135 /api/wifi /api/wifi/scan");
-  console.log("[MOCK] Wi-Fi changes are in-memory; sensor values are simulated.");
+  console.log("[MOCK] Endpoints: /api/health /api/mq135 /api/mqtt /api/wifi /api/wifi/scan");
+  console.log("[MOCK] Sensor and Wi-Fi values are simulated; MQTT publishes to the configured broker.");
 });
+
+async function shutdown(signal) {
+  console.log("[MOCK] " + signal + " received; shutting down.");
+  server.close();
+  await mqttBridge.stop();
+  process.exit(0);
+}
+process.once("SIGINT", () => void shutdown("SIGINT"));
+process.once("SIGTERM", () => void shutdown("SIGTERM"));
