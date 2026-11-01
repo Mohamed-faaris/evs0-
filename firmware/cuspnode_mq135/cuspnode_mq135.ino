@@ -10,9 +10,12 @@
 #include <WebServer.h>
 #include <Preferences.h>
 #include <ArduinoJson.h>
+#include <WiFiClientSecure.h>
+#include <MQTT.h>
+#include <time.h>
 
 // Increment this for each firmware release. Build date/time are set by the compiler.
-#define FIRMWARE_VERSION "1.0.0"
+#define FIRMWARE_VERSION "1.1.0"
 #define FIRMWARE_BUILD_DATE __DATE__
 #define FIRMWARE_BUILD_TIME __TIME__
 
@@ -62,6 +65,26 @@ struct MQTTConfig {
   bool enabled;
 };
 MQTTConfig mqttConfig = {"", 8883, "mqtts", "", "", false};
+
+const char* const DEVICE_ID = "device-001";
+constexpr uint32_t MQTT_RECONNECT_INTERVAL_MS = 5000;
+constexpr uint32_t MQTT_TELEMETRY_INTERVAL_MS = 5000;
+constexpr uint32_t NTP_RETRY_INTERVAL_MS = 30000;
+constexpr time_t VALID_UNIX_TIME = 1700000000; // 2023-11-14
+
+WiFiClientSecure mqttTlsClient;
+MQTTClient mqttClient(768);
+String mqttAvailabilityTopic;
+bool mqttStateDirty = true;
+bool ntpConfigured = false;
+bool ntpTimeSynced = false;
+uint32_t lastNtpConfigMs = 0;
+uint32_t lastMQTTConnectAttemptMs = 0;
+uint32_t lastMQTTTelemetryMs = 0;
+uint32_t mqttTelemetrySequence = 0;
+
+static const char MQTT_OFFLINE_PAYLOAD[] =
+  R"JSON({"device_id":"device-001","status":"offline"})JSON";
 
 enum DeviceState : uint8_t {
   BOOTING, WIFI_SCANNING, WIFI_CONNECTING,
@@ -117,6 +140,7 @@ void setState(DeviceState next) {
     stateName(currentState), stateName(next), millis() / 1000UL);
 
   currentState = next;
+  mqttStateDirty = true;
   ledStep = 0;
   ledStepStartedMs = millis();
 }
@@ -278,6 +302,8 @@ void saveMQTTConfig() {
   preferences.putString("password", mqttConfig.password);
   preferences.putBool("enabled", mqttConfig.enabled);
   preferences.end();
+  if (mqttClient.connected()) mqttClient.disconnect();
+  lastMQTTConnectAttemptMs = 0;
   Serial.println("[MQTT] Configuration saved to NVS.");
 }
 
@@ -333,8 +359,14 @@ void diagnoseMQTT() {
     }
   }
 
-  Serial.println("[DIAG] MQTT/TLS client is not implemented in this firmware.");
-  Serial.println("[DIAG] TCP success does NOT verify TLS certificate or MQTT credentials.");
+  Serial.printf("[DIAG] NTP time : %s\n", ntpTimeSynced ? "SYNCHRONIZED" : "WAITING");
+  Serial.printf("[DIAG] MQTT/TLS : %s\n", mqttClient.connected() ? "CONNECTED" : "NOT CONNECTED");
+  Serial.printf("[DIAG] MQTT lib error=%d, CONNACK=%d\n",
+    static_cast<int>(mqttClient.lastError()),
+    static_cast<int>(mqttClient.returnCode()));
+  if (!mqttClient.connected()) {
+    Serial.println("[DIAG] The firmware retries the TLS/MQTT connection automatically.");
+  }
   Serial.println("------------------------");
 }
 
@@ -348,7 +380,10 @@ void printMQTTStatus() {
   Serial.printf("Protocol : %s\n", mqttConfig.protocol.c_str());
   Serial.printf("Username : %s\n", mqttConfig.username.isEmpty() ? "(not set)" : "configured");
   Serial.printf("Password : %s\n", mqttConfig.password.isEmpty() ? "not set" : "configured");
-  Serial.println("Connection/publishing: not implemented in this firmware build.");
+  Serial.printf("Time sync: %s\n", ntpTimeSynced ? "READY" : "WAITING");
+  Serial.printf("MQTT link: %s\n", mqttClient.connected() ? "CONNECTED" : "DISCONNECTED");
+  Serial.printf("MQTT error: %d\n", static_cast<int>(mqttClient.lastError()));
+  Serial.printf("MQTT CONNACK: %d\n", static_cast<int>(mqttClient.returnCode()));
 }
 
 bool setMQTTServer(const String& host, const String& portText) {
@@ -363,10 +398,235 @@ bool setMQTTServer(const String& host, const String& portText) {
 }
 
 bool setMQTTProtocol(const String& protocol) {
-  if (protocol != "mqtt" && protocol != "mqtts") return false;
+  if (protocol != "mqtts") return false;
   mqttConfig.protocol = protocol;
   saveMQTTConfig();
   return true;
+}
+
+// ---------------- MQTT over verified TLS ----------------
+
+String makeMQTTTopic(const char* suffix) {
+  return String("evs/v1/devices/") + DEVICE_ID + "/" + suffix;
+}
+
+bool getUTCISO8601(char* output, size_t outputSize) {
+  const time_t now = time(nullptr);
+  if (now < VALID_UNIX_TIME) return false;
+
+  struct tm utc;
+  if (gmtime_r(&now, &utc) == nullptr) return false;
+  return strftime(output, outputSize, "%Y-%m-%dT%H:%M:%SZ", &utc) > 0;
+}
+
+void updateSystemClock() {
+  if (WiFi.status() != WL_CONNECTED) return;
+
+  const time_t now = time(nullptr);
+  if (now >= VALID_UNIX_TIME) {
+    if (!ntpTimeSynced) {
+      ntpTimeSynced = true;
+      Serial.printf("[NTP] Time synchronized: %s", asctime(gmtime(&now)));
+    }
+    return;
+  }
+
+  ntpTimeSynced = false;
+  if (!ntpConfigured || millis() - lastNtpConfigMs >= NTP_RETRY_INTERVAL_MS) {
+    configTime(0, 0, "pool.ntp.org", "time.google.com", "time.cloudflare.com");
+    ntpConfigured = true;
+    lastNtpConfigMs = millis();
+    Serial.println("[NTP] Requested UTC time synchronization.");
+  }
+}
+
+const char* mqttErrorText(int code) {
+  switch (code) {
+    case 0: return "success";
+    case 1: return "unacceptable protocol version";
+    case 2: return "client identifier rejected";
+    case 3: return "broker unavailable";
+    case 4: return "bad username or password";
+    case 5: return "not authorized";
+    default: return "transport/library error; inspect error codes";
+  }
+}
+
+bool publishMQTTAvailability(bool online) {
+  StaticJsonDocument<160> doc;
+  doc["device_id"] = DEVICE_ID;
+  doc["status"] = online ? "online" : "offline";
+  char payload[192];
+  const size_t length = serializeJson(doc, payload, sizeof(payload));
+  if (length == 0 || length >= sizeof(payload)) return false;
+  return mqttClient.publish(mqttAvailabilityTopic.c_str(), payload, true, 1);
+}
+
+bool publishMQTTState() {
+  StaticJsonDocument<512> doc;
+  doc["schema_version"] = 1;
+  doc["device_id"] = DEVICE_ID;
+  doc["state"] = stateName(currentState);
+  doc["uptime_seconds"] = millis() / 1000UL;
+
+  JsonObject network = doc.createNestedObject("network");
+  network["wifi_connected"] = WiFi.status() == WL_CONNECTED;
+  network["wifi_ssid"] = connectedSSID;
+  network["hotspot_active"] = hotspotActive;
+
+  JsonObject sensor = doc.createNestedObject("sensor");
+  sensor["model"] = "MQ-135";
+  sensor["valid"] = sensorValid;
+
+  JsonObject mqtt = doc.createNestedObject("mqtt");
+  mqtt["connected"] = mqttClient.connected();
+
+  JsonObject firmware = doc.createNestedObject("firmware");
+  firmware["version"] = FIRMWARE_VERSION;
+  firmware["build_date"] = FIRMWARE_BUILD_DATE;
+  firmware["build_time"] = FIRMWARE_BUILD_TIME;
+
+  char payload[768];
+  const size_t length = serializeJson(doc, payload, sizeof(payload));
+  if (length == 0 || length >= sizeof(payload)) {
+    Serial.println("[MQTT] State payload serialization failed.");
+    return false;
+  }
+
+  const String topic = makeMQTTTopic("state");
+  return mqttClient.publish(topic.c_str(), payload, true, 1);
+}
+
+bool publishMQTTTelemetry() {
+  StaticJsonDocument<512> doc;
+  char timestamp[25];
+
+  doc["schema_version"] = 1;
+  doc["device_id"] = DEVICE_ID;
+  doc["sensor"] = "MQ-135";
+  if (getUTCISO8601(timestamp, sizeof(timestamp))) doc["timestamp"] = timestamp;
+  else doc["timestamp"] = nullptr;
+
+  doc["uptime_seconds"] = millis() / 1000UL;
+  doc["sequence"] = ++mqttTelemetrySequence;
+
+  JsonObject readings = doc.createNestedObject("readings");
+  readings["raw_adc"] = sensorADC;
+  readings["adc_pin_voltage_v"] = adcVoltage;
+  readings["sensor_ao_voltage_v"] = estimatedModuleAOVoltage;
+  readings["ppm"] = nullptr;
+  doc["valid"] = sensorValid;
+
+  char payload[512];
+  const size_t length = serializeJson(doc, payload, sizeof(payload));
+  if (length == 0 || length >= sizeof(payload)) {
+    Serial.println("[MQTT] Telemetry payload serialization failed.");
+    return false;
+  }
+
+  const String topic = makeMQTTTopic("telemetry");
+  return mqttClient.publish(topic.c_str(), payload, false, 1);
+}
+
+void updateMQTT() {
+  if (!mqttConfig.enabled || mqttConfig.host.isEmpty() ||
+      mqttConfig.port == 0 || mqttConfig.protocol != "mqtts") {
+    if (mqttClient.connected()) {
+      mqttClient.disconnect();
+      Serial.println("[MQTT] Disconnected because MQTT is disabled or configuration is invalid.");
+    }
+    return;
+  }
+
+  if (WiFi.status() != WL_CONNECTED) {
+    if (mqttClient.connected()) {
+      mqttClient.disconnect();
+      Serial.println("[MQTT] Disconnected because station Wi-Fi is down.");
+    }
+    return;
+  }
+
+  updateSystemClock();
+  if (!ntpTimeSynced) return;
+
+  if (mqttClient.connected()) {
+    mqttClient.loop();
+
+    if (!mqttClient.connected()) {
+      Serial.println("[MQTT] Connection lost; automatic reconnect scheduled.");
+      return;
+    }
+
+    if (mqttStateDirty) {
+      if (publishMQTTState()) {
+        mqttStateDirty = false;
+        Serial.println("[MQTT] Device state published.");
+      } else {
+        Serial.println("[MQTT] State publish failed.");
+      }
+    }
+
+    if (millis() - lastMQTTTelemetryMs >= MQTT_TELEMETRY_INTERVAL_MS) {
+      lastMQTTTelemetryMs = millis();
+      if (publishMQTTTelemetry()) {
+        Serial.printf("[MQTT] Telemetry published | seq=%lu | ADC=%d\n",
+          static_cast<unsigned long>(mqttTelemetrySequence), sensorADC);
+      } else {
+        Serial.println("[MQTT] Telemetry publish failed.");
+      }
+    }
+    return;
+  }
+
+  if (lastMQTTConnectAttemptMs != 0 &&
+      millis() - lastMQTTConnectAttemptMs < MQTT_RECONNECT_INTERVAL_MS) return;
+
+  lastMQTTConnectAttemptMs = millis();
+  mqttTlsClient.setCACert(EMQX_ROOT_CA);
+  mqttTlsClient.setHandshakeTimeout(15);
+  mqttClient.begin(mqttConfig.host.c_str(), mqttConfig.port, mqttTlsClient);
+  mqttClient.setOptions(30, true, 5000);
+
+  mqttAvailabilityTopic = makeMQTTTopic("availability");
+  mqttClient.setWill(
+    mqttAvailabilityTopic.c_str(),
+    MQTT_OFFLINE_PAYLOAD,
+    true,
+    1
+  );
+
+  String clientId = String("cuspnode-") + WiFi.macAddress();
+  clientId.replace(":", "");
+
+  Serial.printf("[MQTT] Connecting to %s:%u using verified TLS...\n",
+    mqttConfig.host.c_str(), mqttConfig.port);
+
+  if (mqttClient.connect(
+        clientId.c_str(),
+        mqttConfig.username.c_str(),
+        mqttConfig.password.c_str())) {
+    Serial.printf("[MQTT] CONNECTED as %s\n", clientId.c_str());
+
+    if (publishMQTTAvailability(true)) {
+      Serial.println("[MQTT] Online availability published.");
+    } else {
+      Serial.println("[MQTT] Failed to publish online availability.");
+    }
+
+    mqttStateDirty = true;
+    lastMQTTTelemetryMs = millis() - MQTT_TELEMETRY_INTERVAL_MS;
+  } else {
+    char tlsError[128] = {0};
+    const int tlsErrorCode = mqttTlsClient.lastError(tlsError, sizeof(tlsError));
+    const int mqttErrorCode = static_cast<int>(mqttClient.lastError());
+    const int connackCode = static_cast<int>(mqttClient.returnCode());
+
+    Serial.printf("[MQTT] Connect failed | library error=%d | CONNACK=%d (%s)\n",
+      mqttErrorCode, connackCode, mqttErrorText(connackCode));
+    if (tlsErrorCode != 0) {
+      Serial.printf("[TLS] Error %d: %s\n", tlsErrorCode, tlsError);
+    }
+  }
 }
 
 // ---------------- Wi-Fi manager ----------------
@@ -482,7 +742,7 @@ void printStatus() {
   Serial.printf("MQ-135 ADC      : %d\n", sensorADC);
   Serial.printf("ADC voltage     : %.3f V\n", adcVoltage);
   Serial.printf("Estimated AO    : %.3f V\n", estimatedModuleAOVoltage);
-  Serial.printf("MQTT            : %s\n", mqttConfig.enabled && !mqttConfig.host.isEmpty() ? "CONFIGURED (connection not implemented)" : "NOT CONFIGURED");
+  Serial.printf("MQTT connected  : %s\n", mqttClient.connected() ? "YES" : "NO");
   Serial.printf("Saved Wi-Fi     : %u/%u\n", networkCount, MAX_WIFI_NETWORKS);
   Serial.println("=====================================\n");
 }
@@ -593,7 +853,10 @@ void handleHealth() {
   sensor["adc_voltage_v"] = adcVoltage;
 
   doc["mqtt"]["configured"] = mqttConfig.enabled && !mqttConfig.host.isEmpty();
-  doc["mqtt"]["connected"] = false;
+  doc["mqtt"]["connected"] = mqttClient.connected();
+  doc["mqtt"]["time_synced"] = ntpTimeSynced;
+  doc["mqtt"]["library_error"] = static_cast<int>(mqttClient.lastError());
+  doc["mqtt"]["connack_code"] = static_cast<int>(mqttClient.returnCode());
   doc["mqtt"]["host"] = mqttConfig.host;
   doc["mqtt"]["port"] = mqttConfig.port;
   doc["mqtt"]["protocol"] = mqttConfig.protocol;
@@ -738,8 +1001,9 @@ sensor read
 ap status
 mqtt status
 mqtt diagnose
+mqtt reconnect
 mqtt set-server <HOST> <PORT>
-mqtt set-protocol <mqtt|mqtts>
+mqtt set-protocol <mqtts>
 mqtt set-auth <USERNAME> <PASSWORD>
 mqtt clear-auth
 mqtt enable
@@ -797,6 +1061,11 @@ void handleSerialCommand(String command) {
   }
   else if (command == "mqtt status") printMQTTStatus();
   else if (command == "mqtt diagnose") diagnoseMQTT();
+  else if (command == "mqtt reconnect") {
+    if (mqttClient.connected()) mqttClient.disconnect();
+    lastMQTTConnectAttemptMs = 0;
+    Serial.println("[MQTT] Reconnect requested; the main loop will attempt it.");
+  }
   else if (command.startsWith("mqtt set-server ")) {
     String args = command.substring(16);
     int separator = args.indexOf(' ');
@@ -881,6 +1150,11 @@ void setup() {
 
   loadNetworks();
   loadMQTTConfig();
+  mqttAvailabilityTopic = makeMQTTTopic("availability");
+  mqttTlsClient.setCACert(EMQX_ROOT_CA);
+  mqttTlsClient.setHandshakeTimeout(15);
+  mqttClient.setOptions(30, true, 5000);
+  Serial.println("[MQTT] TLS client initialized with the embedded CA.");
 
   // AP+STA keeps the local management hotspot active while STA connects.
   WiFi.mode(WIFI_AP_STA);
@@ -914,5 +1188,6 @@ void loop() {
     readSensor();
   }
 
+  updateMQTT();
   delay(2);
 }
