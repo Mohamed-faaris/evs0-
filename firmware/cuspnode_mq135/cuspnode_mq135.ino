@@ -462,9 +462,9 @@ void readSensor() {
 
 void printStatus() {
   Serial.println("\n========== CUSPNODE STATUS ==========");
-  Serial.printf("Firmware        : v%s\\n", FIRMWARE_VERSION);
-  Serial.printf("Build date      : %s\\n", FIRMWARE_BUILD_DATE);
-  Serial.printf("Build time      : %s\\n", FIRMWARE_BUILD_TIME);
+  Serial.printf("Firmware        : v%s\n", FIRMWARE_VERSION);
+  Serial.printf("Build date      : %s\n", FIRMWARE_BUILD_DATE);
+  Serial.printf("Build time      : %s\n", FIRMWARE_BUILD_TIME);
   Serial.printf("Device          : device-001\n");
   Serial.printf("Uptime          : %lu seconds\n", millis() / 1000UL);
   Serial.printf("State           : %s\n", stateName(currentState));
@@ -875,7 +875,7 @@ void setup() {
 
   setState(BOOTING);
   Serial.println("\n[CUSPNODE] ESP32 MQ-135 starting");
-  Serial.printf("[FW] Version: %s | Built: %s %s\\n", FIRMWARE_VERSION, FIRMWARE_BUILD_DATE, FIRMWARE_BUILD_TIME);
+  Serial.printf("[FW] Version: %s | Built: %s %s\n", FIRMWARE_VERSION, FIRMWARE_BUILD_DATE, FIRMWARE_BUILD_TIME);
 
   loadNetworks();
   loadMQTTConfig();
