@@ -259,33 +259,33 @@ const POWER_METER_MAX_AGE_MS = resolveBoundedInteger(
   3600
 ) * 1000;
 
-function isCurrentPowerMeterReading(reading: Telemetry): boolean {
+function matchesCurrentPowerMeterSession(reading: Telemetry): boolean {
   if (
     reading.device_id !== POWER_METER_DEVICE_ID ||
     reading.device_type !== "power_meter" ||
     reading.valid === false
   ) return false;
 
-  const meterState = states.get(POWER_METER_DEVICE_ID);
-  const currentSessionId = meterState?.session_id;
+  const currentSessionId = states.get(POWER_METER_DEVICE_ID)?.session_id;
   if (typeof currentSessionId === "string" && currentSessionId.length > 0) {
-    if (reading.session_id !== currentSessionId) return false;
-  } else if (typeof reading.session_id === "string" && reading.session_id.length > 0) {
-    // Session-tagged telemetry is not current until its matching retained state arrives.
-    return false;
+    return reading.session_id === currentSessionId;
   }
-
-  if (availability.get(POWER_METER_DEVICE_ID)?.status !== "online") return false;
-
-  const receivedAt = Date.parse(reading.received_at);
-  const ageMs = Date.now() - receivedAt;
-  return Number.isFinite(receivedAt) && ageMs >= 0 && ageMs <= POWER_METER_MAX_AGE_MS;
+  // Session-tagged telemetry is not current until its matching retained state arrives.
+  return !(typeof reading.session_id === "string" && reading.session_id.length > 0);
 }
 
-function getCurrentPowerMeterReadings(): Telemetry[] {
+function collectPowerMeterReadings(requireLive: boolean): Telemetry[] {
   const deduplicated = new Map<string, Telemetry>();
   for (const reading of readings) {
-    if (!isCurrentPowerMeterReading(reading)) continue;
+    if (!matchesCurrentPowerMeterSession(reading)) continue;
+
+    if (requireLive) {
+      if (availability.get(POWER_METER_DEVICE_ID)?.status !== "online") continue;
+      const receivedAt = Date.parse(reading.received_at);
+      const ageMs = Date.now() - receivedAt;
+      if (!Number.isFinite(receivedAt) || ageMs < 0 || ageMs > POWER_METER_MAX_AGE_MS) continue;
+    }
+
     const session = reading.session_id || "legacy";
     const sampleKey = typeof reading.sequence === "number" && Number.isFinite(reading.sequence)
       ? session + ":seq:" + reading.sequence
@@ -299,6 +299,14 @@ function getCurrentPowerMeterReadings(): Telemetry[] {
     const rightTime = Date.parse(right.timestamp || right.received_at);
     return leftTime - rightTime;
   });
+}
+
+function getCurrentPowerMeterReadings(): Telemetry[] {
+  return collectPowerMeterReadings(true);
+}
+
+function getPowerMeterSessionHistory(): Telemetry[] {
+  return collectPowerMeterReadings(false);
 }
 
 app.get("/api/power-meter/carbon", (c) => {
@@ -328,7 +336,7 @@ app.get("/api/power-meter/carbon", (c) => {
 app.get("/api/power-meter/history", (c) => {
   const requestedLimit = Number(c.req.query("limit") || 100);
   const limit = Number.isFinite(requestedLimit) ? Math.min(Math.max(requestedLimit, 1), 1000) : 100;
-  const data = getCurrentPowerMeterReadings().slice(-limit);
+  const data = getPowerMeterSessionHistory().slice(-limit);
   return c.json({ data });
 });
 app.get("/api/readings/history", (c) => {
