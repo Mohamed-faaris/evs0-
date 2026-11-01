@@ -11,6 +11,11 @@
 #include <Preferences.h>
 #include <ArduinoJson.h>
 
+// Increment this for each firmware release. Build date/time are set by the compiler.
+#define FIRMWARE_VERSION "1.0.0"
+#define FIRMWARE_BUILD_DATE __DATE__
+#define FIRMWARE_BUILD_TIME __TIME__
+
 // Forward declaration: Arduino's prototype generator may emit function
 // declarations before the full struct definition below.
 struct LedPattern;
@@ -556,8 +561,12 @@ refresh();setInterval(refresh,3000);
 }
 
 void handleHealth() {
-  StaticJsonDocument<640> doc;
+  StaticJsonDocument<768> doc;
   doc["status"] = "ok";
+  JsonObject firmware = doc.createNestedObject("firmware");
+  firmware["version"] = FIRMWARE_VERSION;
+  firmware["build_date"] = FIRMWARE_BUILD_DATE;
+  firmware["build_time"] = FIRMWARE_BUILD_TIME;
   doc["device_id"] = "device-001";
   doc["state"] = stateName(currentState);
   doc["uptime_seconds"] = millis() / 1000UL;
