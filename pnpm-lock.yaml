@@ -79,6 +79,9 @@ importers:
       dotenv:
         specifier: ^16.6.1
         version: 16.6.1
+      mqtt:
+        specifier: ^5.16.1
+        version: 5.16.1
 
 packages:
 
