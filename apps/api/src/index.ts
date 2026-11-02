@@ -643,34 +643,49 @@ async function fetchChennaiSkySnapshot(): Promise<{ payload: unknown; fetchedAt:
   }
 
   const index = Object.fromEntries(headers.map((header, position) => [header, position])) as Record<string, number>;
-  const latestByCamera = new Map<string, Record<string, unknown>>();
+  const framesByCamera = new Map<string, Record<string, unknown>[]>();
   for (const line of lines.slice(1)) {
     const cells = parseCsvLine(line);
     const camera = cells[index.camera_id] || "unknown";
     const capturedAt = cells[index.captured_at] || "";
-    const current = latestByCamera.get(camera);
-    if (current && Date.parse(String(current.captured_at)) >= Date.parse(capturedAt)) continue;
     const numeric = (key: string) => {
       const raw = cells[index[key]];
       if (raw === undefined || raw === "") return null;
       const parsed = Number(raw);
       return Number.isFinite(parsed) ? parsed : null;
     };
-    latestByCamera.set(camera, {
+    const frame = {
       id: cells[index.id] || null,
       camera_id: camera,
       captured_at: capturedAt,
-      image_url: cells[index.image_url] || null,
+      image_id: String(cells[index.id] || "").match(/^\d+$/) ? String(cells[index.id]) : null,
       detector: cells[index.detector] || null,
       detector_confidence: numeric("detector_confidence"),
       rain_truth: cells[index.rain_truth] || null,
       truth_mm_hr: numeric("truth_mm_hr"),
       wet_nearby: numeric("wet_nearby")
-    });
+    };
+    const frames = framesByCamera.get(camera) || [];
+    frames.push(frame);
+    framesByCamera.set(camera, frames);
   }
 
-  const cameras = [...latestByCamera.values()].sort((a, b) =>
-    Date.parse(String(b.captured_at)) - Date.parse(String(a.captured_at))
+  const cameras = [...framesByCamera.entries()].map(([cameraId, cameraFrames]) => {
+    cameraFrames.sort((a, b) => Date.parse(String(b.captured_at)) - Date.parse(String(a.captured_at)));
+    const latest = cameraFrames[0] || {};
+    return {
+      camera_id: cameraId,
+      captured_at: latest.captured_at || null,
+      image_id: latest.image_id || null,
+      detector: latest.detector || null,
+      detector_confidence: latest.detector_confidence ?? null,
+      rain_truth: latest.rain_truth || null,
+      truth_mm_hr: latest.truth_mm_hr ?? null,
+      wet_nearby: latest.wet_nearby ?? null,
+      frames: cameraFrames.slice(0, 8).filter((frame) => frame.image_id)
+    };
+  }).sort((a, b) =>
+    Date.parse(String(b.captured_at || "")) - Date.parse(String(a.captured_at || ""))
   );
   return {
     payload: {
@@ -684,6 +699,46 @@ async function fetchChennaiSkySnapshot(): Promise<{ payload: unknown; fetchedAt:
     fetchedAt: new Date().toISOString()
   };
 }
+
+app.get("/api/chennai-aqi/sky/image/:id", async (c) => {
+  const id = c.req.param("id");
+  if (!/^\d{1,10}$/.test(id)) {
+    return c.json({ error: "invalid_sky_image_id", message: "Image ID must contain digits only." }, 400);
+  }
+  try {
+    const upstream = await fetch("https://pol.reclaimchennai.city/sky/" + id + ".jpg", {
+      headers: { Accept: "image/jpeg", "User-Agent": "EVS0-Chennai-AQI-Proxy/1.0" },
+      redirect: "error",
+      signal: AbortSignal.timeout(10_000)
+    });
+    const contentType = upstream.headers.get("content-type") || "";
+    if (!upstream.ok || !contentType.toLowerCase().startsWith("image/jpeg") || !upstream.body) {
+      await upstream.body?.cancel().catch(() => {});
+      return c.json({
+        error: "sky_image_unavailable",
+        message: "The source camera frame could not be retrieved.",
+        upstream_status: upstream.status
+      }, 502);
+    }
+    const length = Number(upstream.headers.get("content-length"));
+    if (Number.isFinite(length) && length > 2 * 1024 * 1024) {
+      await upstream.body.cancel().catch(() => {});
+      return c.json({ error: "sky_image_too_large", message: "The source camera frame exceeded 2 MiB." }, 502);
+    }
+    c.header("Cache-Control", "public, max-age=900, stale-while-revalidate=3600");
+    c.header("X-Content-Type-Options", "nosniff");
+    return new Response(upstream.body, {
+      status: 200,
+      headers: { "Content-Type": "image/jpeg", "Cache-Control": "public, max-age=900, stale-while-revalidate=3600", "X-Content-Type-Options": "nosniff" }
+    });
+  } catch (error) {
+    return c.json({
+      error: "sky_image_upstream_unavailable",
+      message: "The source camera frame could not be fetched.",
+      detail: error instanceof Error ? error.message : "Unknown upstream error"
+    }, 502);
+  }
+});
 
 app.get("/api/chennai-aqi/sky", async (c) => {
   if (chennaiSkyCache && chennaiSkyCache.expiresAt > Date.now()) {
