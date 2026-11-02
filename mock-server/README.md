@@ -79,6 +79,8 @@ For the MQ-135 simulator (`device-001` by default), it uses these topics:
 | Publish | `evs/v1/devices/device-001/command/ack` | 1 | No |
 
 - Publishes a simulated telemetry packet immediately after connecting, then every 5 seconds by default.
+- Advances the MQ-135 mock sample only when a telemetry packet is generated. HTTP health/read endpoints return the latest sample without changing it, so dashboard polling cannot speed up or distort the simulated sensor signal.
+- Uses a slow mean-reverting baseline with bounded small noise instead of a fast periodic sine wave, producing a stable demo trend rather than a repeating sawtooth.
 - Publishes retained state and online availability on connect.
 - Configures an offline Last Will with retain enabled.
 - Subscribes to the command topic. Commands are deliberately rejected with an acknowledgement; the mock does not execute remote actions or change credentials.
@@ -118,7 +120,7 @@ curl http://127.0.0.1:3001/api/mqtt
 
 ## Mock limitations
 
-- MQ-135 and power-meter values are generated demo data, not physical measurements. The power meter is a synthetic single-phase load model, not revenue-grade or safety-grade instrumentation. PPM remains `null`; no gas concentration calibration is implemented.
+- MQ-135 and power-meter values are generated demo data, not physical measurements. The MQ-135 graph shows a slowly drifting synthetic raw ADC signal with small bounded noise; it is not a physical air-quality measurement. The power meter is a synthetic single-phase load model, not revenue-grade or safety-grade instrumentation. PPM remains `null`; no gas concentration calibration is implemented.
 - Wi-Fi, hotspot IP and client counts are simulated. The server does not connect to a router or an ESP32.
 - Saved Wi-Fi entries are in memory and reset when the mock server restarts. Passwords are not returned by the HTTP API.
 - MQTT is a real broker connection when configured. An MQTT connected status confirms the broker session, not the accuracy of the simulated sensor data.
