@@ -63,6 +63,8 @@ pnpm start:mock
 - Orchestration: pnpm workspaces + Turborepo
 - Authentication: none; dashboard APIs are read-only
 
+The API exposes a same-origin server-side proxy at `/api/chennai-aqi/stations` for the public Chennai station feed configured in `CHENNAI_AQI_STATIONS_URL`. The browser talks only to the Hono API, so no browser CORS request is made to the source host. The API validates the upstream HTTPS host/path, caches successful JSON for 60 seconds, and returns an explicit source-unavailable response when the upstream is unreachable; it does not substitute screenshot values or synthetic AQI readings. The AQI page renders OpenStreetMap raster tiles and station markers with a native React tile-map implementation; no third-party map JavaScript is executed in the dashboard. The public source page's own station-map/sky/radar endpoints were Cloudflare-protected during inspection, and its published station-history endpoint could not be verified, so historical replay is marked unavailable rather than simulated.
+
 The API also exposes a read-only proxy at `/api/power-map/*` for the Power Map of India. It serves the upstream map page, relative JS/CSS/JSON/GeoJSON assets, and available API routes beneath the configured API origin, fetching them server-to-server from `POWER_MAP_UPSTREAM` (default `https://power.reclaimchennai.city`). The embedded page runs in a sandboxed iframe with an opaque origin; the proxy allows anonymous CORS reads for its public assets and data. Map tiles, glyphs, fonts, weather and CDN resources hosted by third parties remain direct requests to their respective providers.
 
 The API subscribes to telemetry, state, and availability topics under `MQTT_TOPIC_ROOT`. It keeps MQ-135 and power-meter readings separate and exposes `/api/power-meter/latest` and `/api/power-meter/history`. The mock server publishes two independent MQTT identities: `DEVICE_ID` (default `device-001`) and `POWER_METER_DEVICE_ID` (default `power-meter-001`). Both use the broker credentials from `.env`, but each has a distinct MQTT client ID.
@@ -73,7 +75,8 @@ The API subscribes to telemetry, state, and availability topics under `MQTT_TOPI
 2. **AQI Predictions** — official AQI forecasts remain unavailable until calibrated pollutant sensors and a validated model exist. A separate simple exponential-smoothing (SES) baseline estimates the next MQ-135 raw ADC response for sensor-drift monitoring; it is not an AQI prediction.
 3. **Energy & Carbon** — mock/physical power-meter voltage, current, active/apparent/reactive power, power factor, frequency, energy, load history, and a location-based electricity CO₂ estimate.
 4. **Energy Forecast** — transparent 24-hour, 7-day, and 30-day energy-use and grid-CO₂ projections from a simple exponential-smoothing (SES) model over recent active-power samples. This is a statistical baseline, not a trained AI/ML prediction.
-5. **Power Map** — Reclaim Chennai's India power-station and transmission-grid map in its own independent tab.
+5. **Chennai AQI Map** — a pixel-art AQI city summary and MapLibre station map using the public Chennai station feed referenced by Reclaim Chennai's dashboard.
+6. **Power Map** — Reclaim Chennai's India power-station and transmission-grid map in its own independent tab.
 
 The mock power meter sends synthetic single-phase electrical values through MQTT; it is not connected to a physical energy meter. Voltage/current/power/energy values are illustrative only. The mock energy counter resets when the mock process restarts.
 

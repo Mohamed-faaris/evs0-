@@ -414,7 +414,220 @@ app.get("/api/aqi/predictions", (c) => c.json({
   available: false,
   reason: "No validated prediction model is configured yet. Predictions will be enabled after collecting and validating historical data."
 }));
-app.get("/", (c) => c.json({ name: "EVS0 Dashboard API", docs: ["/api/health", "/api/devices", "/api/readings/latest", "/api/readings/history", "/api/power-meter/latest", "/api/power-meter/history", "/api/power-meter/carbon", "/api/power-meter/forecast", "/api/aqi/current", "/api/aqi/predictions", "/api/aqi/response-forecast"] }));
+app.get("/", (c) => c.json({ name: "EVS0 Dashboard API", docs: ["/api/health", "/api/devices", "/api/chennai-aqi/source", "/api/chennai-aqi/stations", "/api/readings/latest", "/api/readings/history", "/api/power-meter/latest", "/api/power-meter/history", "/api/power-meter/carbon", "/api/power-meter/forecast", "/api/aqi/current", "/api/aqi/predictions", "/api/aqi/response-forecast"] }));
+
+// Public Reclaim Chennai city-station source. Keep this fixed to the source
+// declared by the AQI dashboard; browser clients call EVS0, not the upstream host.
+const CHENNAI_AQI_SOURCE_URL = (process.env.CHENNAI_AQI_STATIONS_URL ||
+  "https://api.airquality.info/api/v1/cities/Chennai/stations").trim();
+let chennaiAqiSourceUrl: URL | null = null;
+try {
+  const parsed = new URL(CHENNAI_AQI_SOURCE_URL);
+  if (
+    parsed.protocol !== "https:" ||
+    parsed.hostname !== "api.airquality.info" ||
+    parsed.port ||
+    parsed.pathname !== "/api/v1/cities/Chennai/stations" ||
+    parsed.username ||
+    parsed.password ||
+    parsed.search ||
+    parsed.hash
+  ) {
+    throw new Error("CHENNAI_AQI_STATIONS_URL must use the published HTTPS Chennai stations endpoint.");
+  }
+  chennaiAqiSourceUrl = parsed;
+} catch (error) {
+  console.error("[CHENNAI-AQI] Source URL rejected:", error instanceof Error ? error.message : "Invalid URL");
+}
+
+type ChennaiAqiSnapshot = { payload: unknown; fetchedAt: string };
+type ChennaiAqiProxyError = Error & { status?: number; code?: string };
+
+let chennaiAqiCache: { expiresAt: number; payload: unknown; fetchedAt: string } | null = null;
+let chennaiAqiRefreshPromise: Promise<ChennaiAqiSnapshot> | null = null;
+const CHENNAI_AQI_CACHE_MS = 60_000;
+const CHENNAI_AQI_MAX_RESPONSE_BYTES = 5 * 1024 * 1024;
+
+function aqiProxyError(message: string, status: number, code: string): ChennaiAqiProxyError {
+  return Object.assign(new Error(message), { status, code });
+}
+
+async function fetchChennaiAqiSnapshot(): Promise<ChennaiAqiSnapshot> {
+  if (!chennaiAqiSourceUrl) {
+    throw aqiProxyError(
+      "The Chennai AQI source URL is invalid. Check CHENNAI_AQI_STATIONS_URL.",
+      503,
+      "chennai_aqi_source_misconfigured"
+    );
+  }
+
+  const upstream = await fetch(chennaiAqiSourceUrl, {
+    method: "GET",
+    headers: {
+      Accept: "application/json",
+      "User-Agent": "EVS0-Chennai-AQI-Proxy/1.0"
+    },
+    redirect: "error",
+    signal: AbortSignal.timeout(12_000)
+  });
+
+  if (!upstream.ok) {
+    const status = upstream.status;
+    await upstream.body?.cancel().catch(() => {});
+    throw aqiProxyError(
+      "The public Chennai station source returned HTTP " + status + ".",
+      502,
+      "chennai_aqi_upstream_http_error"
+    );
+  }
+
+  const contentType = upstream.headers.get("content-type") || "";
+  if (!contentType.toLowerCase().includes("json")) {
+    await upstream.body?.cancel().catch(() => {});
+    throw aqiProxyError(
+      "The public Chennai station source did not return JSON.",
+      502,
+      "chennai_aqi_upstream_non_json"
+    );
+  }
+
+  const contentLength = Number(upstream.headers.get("content-length"));
+  if (Number.isFinite(contentLength) && contentLength > CHENNAI_AQI_MAX_RESPONSE_BYTES) {
+    await upstream.body?.cancel().catch(() => {});
+    throw aqiProxyError(
+      "The public Chennai station response exceeded the 5 MiB limit.",
+      502,
+      "chennai_aqi_upstream_response_too_large"
+    );
+  }
+
+  if (!upstream.body) {
+    throw aqiProxyError(
+      "The public Chennai station source returned an empty response body.",
+      502,
+      "chennai_aqi_upstream_invalid_payload"
+    );
+  }
+
+  const reader = upstream.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let totalBytes = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      totalBytes += value.byteLength;
+      if (totalBytes > CHENNAI_AQI_MAX_RESPONSE_BYTES) {
+        await reader.cancel().catch(() => {});
+        throw aqiProxyError(
+          "The public Chennai station response exceeded the 5 MiB limit.",
+          502,
+          "chennai_aqi_upstream_response_too_large"
+        );
+      }
+      chunks.push(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+
+  const bytes = new Uint8Array(totalBytes);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+
+  let payload: unknown;
+  try {
+    payload = JSON.parse(new TextDecoder().decode(bytes));
+  } catch {
+    throw aqiProxyError(
+      "The public Chennai station source returned malformed JSON.",
+      502,
+      "chennai_aqi_upstream_invalid_payload"
+    );
+  }
+
+  if (!payload || typeof payload !== "object") {
+    throw aqiProxyError(
+      "The public Chennai station source returned an empty or invalid JSON payload.",
+      502,
+      "chennai_aqi_upstream_invalid_payload"
+    );
+  }
+
+  return { payload, fetchedAt: new Date().toISOString() };
+}
+
+app.get("/api/chennai-aqi/source", (c) => c.json({
+  source: "Reclaim Chennai / api.airquality.info",
+  endpoint: CHENNAI_AQI_SOURCE_URL,
+  map_center: [13.0833, 80.2667],
+  map_zoom: 11,
+  status: chennaiAqiCache && chennaiAqiCache.expiresAt > Date.now() ? "cached" : "unknown",
+  fetched_at: chennaiAqiCache?.fetchedAt || null,
+  historical_endpoint_verified: false
+}));
+
+app.get("/api/chennai-aqi/stations", async (c) => {
+  if (!chennaiAqiSourceUrl) {
+    return c.json({
+      error: "chennai_aqi_source_misconfigured",
+      message: "The Chennai AQI source URL is invalid. Check CHENNAI_AQI_STATIONS_URL."
+    }, 503);
+  }
+
+  if (chennaiAqiCache && chennaiAqiCache.expiresAt > Date.now()) {
+    c.header("X-AQI-Source", "api.airquality.info");
+    c.header("X-AQI-Cache", "HIT");
+    c.header("X-AQI-Updated-At", chennaiAqiCache.fetchedAt);
+    return c.json(chennaiAqiCache.payload, 200, { "Cache-Control": "public, max-age=30" });
+  }
+
+  // All callers arriving during a cache miss share one upstream request. Only
+  // the promise that still owns this slot may publish a new cache snapshot.
+  let refreshPromise = chennaiAqiRefreshPromise;
+  if (!refreshPromise) {
+    refreshPromise = fetchChennaiAqiSnapshot();
+    chennaiAqiRefreshPromise = refreshPromise;
+  }
+
+  try {
+    const snapshot = await refreshPromise;
+    if (chennaiAqiRefreshPromise === refreshPromise) {
+      chennaiAqiCache = {
+        payload: snapshot.payload,
+        fetchedAt: snapshot.fetchedAt,
+        expiresAt: Date.now() + CHENNAI_AQI_CACHE_MS
+      };
+    }
+
+    c.header("X-AQI-Source", "api.airquality.info");
+    c.header("X-AQI-Cache", "MISS");
+    c.header("X-AQI-Updated-At", snapshot.fetchedAt);
+    return c.json(snapshot.payload, 200, { "Cache-Control": "public, max-age=30" });
+  } catch (error) {
+    const proxyError = error as ChennaiAqiProxyError;
+    const status = proxyError.status || 503;
+    const code = proxyError.code || "chennai_aqi_upstream_unavailable";
+    const message = proxyError.status
+      ? proxyError.message
+      : "The public Chennai station feed is unavailable. No sample AQI values are substituted.";
+    if (!proxyError.status) {
+      console.warn("[CHENNAI-AQI] Upstream unavailable:", error instanceof Error ? error.message : "Unknown error");
+    }
+    return c.json({
+      error: code,
+      message,
+      detail: proxyError.status ? undefined : error instanceof Error ? error.message : "Unknown upstream network error"
+    }, status as 502 | 503);
+  } finally {
+    if (chennaiAqiRefreshPromise === refreshPromise) {
+      chennaiAqiRefreshPromise = null;
+    }
+  }
+});
 
 const POWER_MAP_UPSTREAM_VALUE = (process.env.POWER_MAP_UPSTREAM || "https://power.reclaimchennai.city").trim();
 let POWER_MAP_UPSTREAM: URL | null = null;
