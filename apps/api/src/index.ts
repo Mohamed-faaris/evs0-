@@ -422,7 +422,7 @@ const chennaiAqiSourceUrl = new URL("https://pol.reclaimchennai.city/api/station
 const CHENNAI_AQI_SOURCE_URL = chennaiAqiSourceUrl.toString();
 
 type ChennaiAqiSnapshot = { payload: unknown; fetchedAt: string };
-type ChennaiAqiProxyError = Error & { status?: number; code?: string };
+type ChennaiAqiProxyError = Error & { status?: number; code?: string; upstreamStatus?: number };
 
 let chennaiAqiCache: { expiresAt: number; payload: unknown; fetchedAt: string } | null = null;
 let chennaiAqiRefreshPromise: Promise<ChennaiAqiSnapshot> | null = null;
@@ -448,11 +448,13 @@ async function fetchChennaiAqiSnapshot(): Promise<ChennaiAqiSnapshot> {
   if (!upstream.ok) {
     const status = upstream.status;
     await upstream.body?.cancel().catch(() => {});
-    throw aqiProxyError(
-      "The public Chennai station source returned HTTP " + status + ".",
+    const proxyError = aqiProxyError(
+      "The Reclaim Chennai /api/stations endpoint returned HTTP " + status + ".",
       502,
       "chennai_aqi_upstream_http_error"
     );
+    proxyError.upstreamStatus = status;
+    throw proxyError;
   }
 
   const contentType = upstream.headers.get("content-type") || "";
@@ -765,6 +767,7 @@ app.get("/api/chennai-aqi/stations", async (c) => {
     return c.json({
       error: code,
       message,
+      upstream_status: proxyError.upstreamStatus ?? null,
       detail: proxyError.status ? undefined : error instanceof Error ? error.message : "Unknown upstream network error"
     }, status as 424 | 502 | 503);
   } finally {
