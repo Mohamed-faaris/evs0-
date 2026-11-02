@@ -434,14 +434,6 @@ function aqiProxyError(message: string, status: number, code: string): ChennaiAq
 }
 
 async function fetchChennaiAqiSnapshot(): Promise<ChennaiAqiSnapshot> {
-  if (!chennaiAqiSourceUrl) {
-    throw aqiProxyError(
-      "No confirmed public AQI station endpoint is configured. The Reclaim Chennai station route is fixed to the published /api/stations endpoint.",
-      424,
-      "chennai_aqi_source_misconfigured"
-    );
-  }
-
   const upstream = await fetch(chennaiAqiSourceUrl, {
     method: "GET",
     headers: {
@@ -531,9 +523,9 @@ async function fetchChennaiAqiSnapshot(): Promise<ChennaiAqiSnapshot> {
     );
   }
 
-  if (!payload || typeof payload !== "object") {
+  if (!payload || typeof payload !== "object" || !Array.isArray((payload as { stations?: unknown }).stations)) {
     throw aqiProxyError(
-      "The public Chennai station source returned an empty or invalid JSON payload.",
+      "The Reclaim Chennai /api/stations response did not contain a stations array.",
       502,
       "chennai_aqi_upstream_invalid_payload"
     );
