@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import type { CSSProperties } from "react";
 import { AlertCircle, Clock3, ExternalLink, Filter, MapPin, RefreshCw, Search } from "lucide-react";
 
 type Station = {
@@ -43,7 +44,7 @@ function rowsFrom(payload: unknown): unknown[] {
 
 function normalize(payload: unknown): Station[] {
   const pollutantKeys = POLLUTANTS.filter((item) => item.id !== "aqi").map((item) => item.id);
-  return rowsFrom(payload).flatMap((entry, index) => {
+  return rowsFrom(payload).flatMap((entry) => {
     if (!entry || typeof entry !== "object") return [];
     const raw = entry as Record<string, unknown>;
     const geo = raw.geo && typeof raw.geo === "object" ? raw.geo as Record<string, unknown> : {};
@@ -58,10 +59,18 @@ function normalize(payload: unknown): Station[] {
       if (value !== null) pollutants[key] = value;
     }
     const updated = raw.timestamp ?? raw.updated_at ?? raw.last_updated ?? raw.time;
+    const name = String(raw.name ?? raw.station_name ?? raw.location ?? raw.title ?? "Unnamed station");
+    const source = String(raw.source ?? raw.provider ?? raw.network ?? raw.source_name ?? "Source not reported");
+    const providedId = raw.uid ?? raw.id ?? raw.station_id ?? raw.code;
+    // A deterministic fingerprint keeps selection stable when an upstream omits
+    // station IDs and reorders its response array between refreshes.
+    const fallbackId = [name, source, lat ?? "", lon ?? ""].map((part) => encodeURIComponent(String(part))).join("|");
     return [{
-      id: String(raw.uid ?? raw.id ?? raw.station_id ?? raw.code ?? "station-" + index),
-      name: String(raw.name ?? raw.station_name ?? raw.location ?? raw.title ?? "Unnamed station"),
-      source: String(raw.source ?? raw.provider ?? raw.network ?? raw.source_name ?? "Source not reported"),
+      id: providedId === undefined || providedId === null || String(providedId).trim() === ""
+        ? "derived:" + fallbackId
+        : String(providedId),
+      name,
+      source,
       lat: lat !== null && lat > 12.5 && lat < 13.8 ? lat : null,
       lon: lon !== null && lon > 79.5 && lon < 81 ? lon : null,
       aqi,
@@ -187,6 +196,13 @@ function ChennaiTileMap({
     return [{ station, left: x - viewLeft, top: y - viewTop, value: valueFor(station, metric) }];
   });
 
+  useEffect(() => {
+    const station = stations.find((item) => item.id === selected);
+    if (station?.lat !== null && station?.lon !== null && station?.lat !== undefined && station?.lon !== undefined) {
+      setCenter([station.lon, station.lat]);
+    }
+  }, [stations, selected]);
+
   const moveBy = (dx: number, dy: number) => {
     const world = toWorld(center[0], center[1], zoom);
     setCenter(fromWorld(world[0] - dx, world[1] - dy, zoom));
@@ -224,7 +240,7 @@ function ChennaiTileMap({
       key={station.id}
       type="button"
       className={"chennai-map-marker" + (station.id === selected ? " selected" : "")}
-      style={{ left, top, "--marker-color": metric === "aqi" ? aqiColor(station.aqi) : "#4d91c7" } as React.CSSProperties}
+      style={{ left, top, "--marker-color": metric === "aqi" ? aqiColor(station.aqi) : "#4d91c7" } as CSSProperties & { "--marker-color": string }}
       title={station.name + " · " + (value === null ? "No " + metricLabel + " reading" : metricLabel + " " + value)}
       onPointerDown={(event) => event.stopPropagation()}
       onClick={() => onSelect(station.id)}
@@ -337,12 +353,6 @@ export default function ChennaiAqiDashboard({ apiBase = "" }: { apiBase?: string
   const metricLabel=POLLUTANTS.find(x=>x.id===metric)?.label??"AQI";
   const latestMeasurement=stations.map(st=>st.updatedAt).filter((value):value is string=>Boolean(value)&&Number.isFinite(Date.parse(value as string))).sort((a,b)=>Date.parse(b)-Date.parse(a))[0]??null;
   const stationsAbove200=aqiValues.length?aqiValues.filter(value=>value>200).length:null;
-
-  useEffect(()=>{
-    if(selectedStation?.lat!==null&&selectedStation?.lon!==null&&selectedStation?.lat!==undefined&&selectedStation.lon!==undefined){
-      // The tile map receives this selection via its controlled center state.
-    }
-  },[selectedStation]);
 
   return <section className="content chennai-aqi-content">
     <div className="sectionhead chennai-aqi-head">
