@@ -409,6 +409,9 @@ export default function ChennaiAqiDashboard({ apiBase = "" }: { apiBase?: string
   const [query,setQuery]=useState("");
   const [selected,setSelected]=useState<string|null>(null);
   const [retry,setRetry]=useState(0);
+  const [skyData,setSkyData]=useState<SkyDataset|null>(null);
+  const [skyState,setSkyState]=useState<FeedState>("loading");
+  const [skyError,setSkyError]=useState("");
   const requestSequence=useRef(0);
 
   useEffect(()=>{
@@ -459,6 +462,47 @@ export default function ChennaiAqiDashboard({ apiBase = "" }: { apiBase?: string
     };
   },[apiBase,retry]);
 
+  useEffect(()=>{
+    let disposed=false;
+    let timer:number|undefined;
+    const controller=new AbortController();
+    const load=async()=>{
+      setSkyState("loading");
+      setSkyError("");
+      try{
+        const response=await fetch(apiBase+"/api/chennai-aqi/sky",{
+          headers:{Accept:"application/json"},cache:"no-store",signal:controller.signal
+        });
+        const payload=await response.json().catch(()=>null);
+        if(!response.ok){
+          const message=payload&&typeof payload==="object"&&"message" in payload
+            ?String((payload as {message:unknown}).message)
+            :"Sky camera feed returned HTTP "+response.status;
+          throw new Error(message);
+        }
+        if(!payload||typeof payload!=="object"||!Array.isArray((payload as {cameras?:unknown}).cameras)){
+          throw new Error("The source returned an unrecognized sky-camera dataset.");
+        }
+        if(disposed)return;
+        setSkyData(payload as SkyDataset);
+        setSkyState("online");
+      }catch(err){
+        if(disposed||controller.signal.aborted)return;
+        setSkyData(null);
+        setSkyState("offline");
+        setSkyError(err instanceof Error?err.message:"Sky camera dataset is unavailable.");
+      }finally{
+        if(!disposed)timer=window.setTimeout(()=>void load(),15*60*1000);
+      }
+    };
+    void load();
+    return()=>{
+      disposed=true;
+      controller.abort();
+      if(timer!==undefined)window.clearTimeout(timer);
+    };
+  },[apiBase,retry]);
+
   const sourceOptions=useMemo(()=>["all",...new Set(stations.map(st=>st.source).filter(Boolean))],[stations]);
   const filtered=useMemo(()=>stations.filter(st=>{
     const sourceMatch=source==="all"||st.source===source;
@@ -492,6 +536,21 @@ export default function ChennaiAqiDashboard({ apiBase = "" }: { apiBase?: string
 
     {state==="offline"?<div className="chennai-feed-error"><AlertCircle size={20}/><div><strong>Live station data is unavailable</strong><p>{error} The reference screenshot and example values are not used as fallback data.</p></div><a href="https://pol.reclaimchennai.city/#m=aqi_in&h=24" target="_blank" rel="noreferrer">Open source dashboard <ExternalLink size={13}/></a></div>:null}
 
+    <section className="chennai-sky-section">
+      <div className="chennai-sky-head">
+        <div><div className="eyebrow">RECLAIM CHENNAI · PUBLIC CAMERA DATASET</div><h3>What the sky looks like</h3><p>Short replay of the latest published camera frames. The source's rain labels are shown with their capture time.</p></div>
+        <span className={"chennai-feed-status "+skyState}><i/>{skyState==="online"?"SOURCE CONNECTED":skyState==="loading"?"LOADING FRAMES":"CAMERA FEED UNAVAILABLE"}</span>
+      </div>
+      {skyData?.cameras?.length?<div className="chennai-sky-grid">
+        {skyData.cameras.slice(0,4).map(camera=><SkyCameraCard key={camera.camera_id} camera={camera} apiBase={apiBase}/>)}
+      </div>:<div className="chennai-sky-empty">{skyState==="loading"?"Loading source camera frames…":skyError||"No camera records available."}</div>}
+      <div className="chennai-sky-foot">
+        <span>{skyData?.camera_count??0} camera streams · Reclaim Chennai public dataset</span>
+        <span>Latest capture: {age(skyData?.latest_captured_at??null)}</span>
+      </div>
+      <small className="chennai-sky-disclaimer">Camera replay is a visualization of archived source frames, not a live video stream. Rain labels and mm/h values are source annotations, not independent EVS0 measurements.</small>
+    </section>
+
     <div className="chennai-map-layout">
       <article className="chennai-map-card">
         <div className="chennai-map-toolbar"><div className="chennai-metric-switch" aria-label="Pollutant layer">{POLLUTANTS.map(item=><button key={item.id} className={metric===item.id?"active":""} onClick={()=>setMetric(item.id)}>{item.label}</button>)}</div><label className="chennai-source-filter"><Filter size={14}/><select value={source} onChange={e=>setSource(e.target.value)}><option value="all">All sources</option>{sourceOptions.filter(x=>x!=="all").sort().map(x=><option key={x} value={x}>{x}</option>)}</select></label></div>
@@ -507,6 +566,6 @@ export default function ChennaiAqiDashboard({ apiBase = "" }: { apiBase?: string
     </div>
 
     <div className="chennai-history-placeholder"><div><Clock3 size={16}/><strong>Historical replay</strong></div><span>6h · 24h · 3d · 7d · 30d · 1y</span><small>Historical controls are not active until a public station-history endpoint is verified. This page uses the latest station snapshot only.</small></div>
-    <div className="chennai-source-note"><div><strong>DATA & ATTRIBUTION</strong><p>Station source endpoint: api.airquality.info · Chennai. Dashboard reference: Reclaim Chennai. AQI categories use the CPCB scale. Values are shown as received; missing readings are not interpolated.</p></div><a href="https://pol.reclaimchennai.city/#m=aqi_in&h=24" target="_blank" rel="noreferrer">Visit Reclaim Chennai AQI <ExternalLink size={13}/></a></div>
+    <div className="chennai-source-note"><div><strong>DATA & ATTRIBUTION</strong><p>Station feed: Reclaim Chennai public backend (availability depends on its station endpoint). Sky frames: Reclaim Chennai published dataset CSV. AQI categories use the CPCB scale. Values are shown as received; missing readings are not interpolated.</p></div><a href="https://pol.reclaimchennai.city/#m=aqi_in&h=24" target="_blank" rel="noreferrer">Visit Reclaim Chennai AQI <ExternalLink size={13}/></a></div>
   </section>;
 }
