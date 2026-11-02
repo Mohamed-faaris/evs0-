@@ -560,6 +560,168 @@ async function fetchChennaiAqiSnapshot(): Promise<ChennaiAqiSnapshot> {
   return { payload, fetchedAt: new Date().toISOString() };
 }
 
+const CHENNAI_SKY_DATASET_URL = "https://pol.reclaimchennai.city/api/sky/dataset.csv";
+let chennaiSkyCache: { expiresAt: number; payload: unknown; fetchedAt: string } | null = null;
+let chennaiSkyRefresh: Promise<{ payload: unknown; fetchedAt: string }> | null = null;
+const CHENNAI_SKY_CACHE_MS = 5 * 60_000;
+const CHENNAI_SKY_MAX_BYTES = 10 * 1024 * 1024;
+
+function parseCsvLine(line: string): string[] {
+  const fields: string[] = [];
+  let value = "";
+  let quoted = false;
+  for (let index = 0; index < line.length; index += 1) {
+    const char = line[index];
+    if (char === '"') {
+      if (quoted && line[index + 1] === '"') {
+        value += '"';
+        index += 1;
+      } else {
+        quoted = !quoted;
+      }
+    } else if (char === "," && !quoted) {
+      fields.push(value);
+      value = "";
+    } else {
+      value += char;
+    }
+  }
+  fields.push(value);
+  return fields;
+}
+
+async function fetchChennaiSkySnapshot(): Promise<{ payload: unknown; fetchedAt: string }> {
+  const response = await fetch(CHENNAI_SKY_DATASET_URL, {
+    headers: { Accept: "text/csv", "User-Agent": "EVS0-Chennai-AQI-Proxy/1.0" },
+    redirect: "error",
+    signal: AbortSignal.timeout(15_000)
+  });
+
+  if (!response.ok) {
+    await response.body?.cancel().catch(() => {});
+    throw new Error("Reclaim Chennai sky dataset returned HTTP " + response.status + ".");
+  }
+  const type = response.headers.get("content-type") || "";
+  if (!type.toLowerCase().includes("csv") && !type.toLowerCase().includes("text/plain")) {
+    await response.body?.cancel().catch(() => {});
+    throw new Error("Reclaim Chennai sky dataset returned an unexpected content type: " + (type || "unknown"));
+  }
+
+  const declaredLength = Number(response.headers.get("content-length"));
+  if (Number.isFinite(declaredLength) && declaredLength > CHENNAI_SKY_MAX_BYTES) {
+    await response.body?.cancel().catch(() => {});
+    throw new Error("Reclaim Chennai sky dataset exceeded the 10 MiB limit.");
+  }
+
+  const reader = response.body?.getReader();
+  if (!reader) throw new Error("Reclaim Chennai sky dataset returned an empty body.");
+  const decoder = new TextDecoder();
+  let text = "";
+  let totalBytes = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      totalBytes += value.byteLength;
+      if (totalBytes > CHENNAI_SKY_MAX_BYTES) {
+        await reader.cancel().catch(() => {});
+        throw new Error("Reclaim Chennai sky dataset exceeded the 10 MiB limit.");
+      }
+      text += decoder.decode(value, { stream: true });
+    }
+    text += decoder.decode();
+  } finally {
+    reader.releaseLock();
+  }
+
+  const lines = text.split(/\r?\n/).filter(Boolean);
+  if (lines.length < 2) throw new Error("Reclaim Chennai sky dataset contains no camera records.");
+  const headers = parseCsvLine(lines[0]);
+  const expected = ["camera_id", "captured_at", "rain_truth", "truth_mm_hr", "detector", "detector_confidence", "image_url"];
+  if (!expected.every((key) => headers.includes(key))) {
+    throw new Error("Reclaim Chennai sky dataset is missing expected camera/rain columns.");
+  }
+
+  const index = Object.fromEntries(headers.map((header, position) => [header, position])) as Record<string, number>;
+  const latestByCamera = new Map<string, Record<string, unknown>>();
+  for (const line of lines.slice(1)) {
+    const cells = parseCsvLine(line);
+    const camera = cells[index.camera_id] || "unknown";
+    const capturedAt = cells[index.captured_at] || "";
+    const current = latestByCamera.get(camera);
+    if (current && Date.parse(String(current.captured_at)) >= Date.parse(capturedAt)) continue;
+    const numeric = (key: string) => {
+      const raw = cells[index[key]];
+      if (raw === undefined || raw === "") return null;
+      const parsed = Number(raw);
+      return Number.isFinite(parsed) ? parsed : null;
+    };
+    latestByCamera.set(camera, {
+      id: cells[index.id] || null,
+      camera_id: camera,
+      captured_at: capturedAt,
+      image_url: cells[index.image_url] || null,
+      detector: cells[index.detector] || null,
+      detector_confidence: numeric("detector_confidence"),
+      rain_truth: cells[index.rain_truth] || null,
+      truth_mm_hr: numeric("truth_mm_hr"),
+      wet_nearby: numeric("wet_nearby")
+    });
+  }
+
+  const cameras = [...latestByCamera.values()].sort((a, b) =>
+    Date.parse(String(b.captured_at)) - Date.parse(String(a.captured_at))
+  );
+  return {
+    payload: {
+      source: "Reclaim Chennai sky camera dataset",
+      source_url: CHENNAI_SKY_DATASET_URL,
+      device_data: "camera-derived rain labels, not a live rain-gauge feed",
+      camera_count: cameras.length,
+      latest_captured_at: cameras[0]?.captured_at || null,
+      cameras
+    },
+    fetchedAt: new Date().toISOString()
+  };
+}
+
+app.get("/api/chennai-aqi/sky", async (c) => {
+  if (chennaiSkyCache && chennaiSkyCache.expiresAt > Date.now()) {
+    c.header("X-AQI-Sky-Cache", "HIT");
+    c.header("X-AQI-Sky-Fetched-At", chennaiSkyCache.fetchedAt);
+    return c.json(chennaiSkyCache.payload, 200, { "Cache-Control": "public, max-age=60" });
+  }
+
+  let request = chennaiSkyRefresh;
+  if (!request) {
+    request = fetchChennaiSkySnapshot();
+    chennaiSkyRefresh = request;
+  }
+
+  try {
+    const snapshot = await request;
+    if (chennaiSkyRefresh === request) {
+      chennaiSkyCache = {
+        payload: snapshot.payload,
+        fetchedAt: snapshot.fetchedAt,
+        expiresAt: Date.now() + CHENNAI_SKY_CACHE_MS
+      };
+    }
+    c.header("X-AQI-Sky-Cache", "MISS");
+    c.header("X-AQI-Sky-Fetched-At", snapshot.fetchedAt);
+    return c.json(snapshot.payload, 200, { "Cache-Control": "public, max-age=60" });
+  } catch (error) {
+    console.warn("[CHENNAI-AQI] Sky dataset unavailable:", error instanceof Error ? error.message : "Unknown error");
+    return c.json({
+      error: "chennai_sky_dataset_unavailable",
+      message: "The public Reclaim Chennai sky-camera dataset could not be retrieved.",
+      detail: error instanceof Error ? error.message : "Unknown upstream error"
+    }, 502);
+  } finally {
+    if (chennaiSkyRefresh === request) chennaiSkyRefresh = null;
+  }
+});
+
 app.get("/api/chennai-aqi/source", (c) => c.json({
   source: "Reclaim Chennai / api.airquality.info",
   endpoint: CHENNAI_AQI_SOURCE_URL,
