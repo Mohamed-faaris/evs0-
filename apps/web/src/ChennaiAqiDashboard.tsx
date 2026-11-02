@@ -261,21 +261,142 @@ function PixelCity({ value }: { value: string }) {
     const canvas = ref.current;
     const ctx = canvas?.getContext("2d");
     if (!canvas || !ctx) return;
-    canvas.width = 480; canvas.height = 220; ctx.imageSmoothingEnabled = false;
-    ctx.fillStyle = "#0b1322"; ctx.fillRect(0,0,480,220);
-    for (let i=0;i<34;i++) {
-      ctx.fillStyle = i%4===0 ? "#e8edf4" : "#657187";
-      ctx.fillRect((i*83+17)%480,(i*37+13)%116,4,4);
-    }
-    const buildings = [[0,150,52,70],[40,122,28,98],[88,142,32,78],[126,111,35,109],[166,158,45,62],[219,135,38,85],[268,96,52,124],[326,119,35,101],[365,150,42,70],[415,126,65,94]];
-    for (const [x,y,w,h] of buildings) {
-      ctx.fillStyle="#171f30";ctx.fillRect(x,y,w,h);
-      ctx.fillStyle="#101828";ctx.fillRect(x+5,y+7,Math.max(0,w-10),Math.max(0,h-7));
-      for(let wx=x+7;wx<x+w-5;wx+=13) for(let wy=y+12;wy<214;wy+=17) if(((wx*3+wy*5)%7)<3){ctx.fillStyle="#f4d56f";ctx.fillRect(wx,wy,4,5);}
-    }
-    ctx.fillStyle="#111a2a";ctx.fillRect(0,194,480,26);
+    const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
+    const observer = new IntersectionObserver((entries) => {
+      visible = entries.some((entry) => entry.isIntersecting);
+    });
+    let visible = true;
+    let animationFrame = 0;
+    let lastFrame = 0;
+    canvas.width = 480;
+    canvas.height = 220;
+    ctx.imageSmoothingEnabled = false;
+
+    const buildings = [
+      [0,150,52,70],[40,122,28,98],[88,142,32,78],[126,111,35,109],
+      [166,158,45,62],[219,135,38,85],[268,96,52,124],[326,119,35,101],
+      [365,150,42,70],[415,126,65,94]
+    ];
+    const stars = Array.from({length:38},(_,i)=>({
+      x:(i*83+17)%480,y:(i*37+13)%116,phase:i*0.73,bright:i%4===0
+    }));
+
+    const draw = (time:number) => {
+      ctx.fillStyle="#0b1322";ctx.fillRect(0,0,480,220);
+      // Band-shaded night sky and gently twinkling pixel stars.
+      for(let band=0;band<7;band++){
+        ctx.fillStyle=["#0b1322","#0d1628","#101a2e","#121d32","#162138","#19243a","#1b2940"][band];
+        ctx.fillRect(0,band*17,480,17);
+      }
+      for(const star of stars){
+        const blink=0.2+0.8*Math.abs(Math.sin(time*1.2+star.phase));
+        ctx.globalAlpha=reducedMotion.matches?0.8:blink;
+        ctx.fillStyle=star.bright?"#e8edf4":"#7e8a9e";
+        ctx.fillRect(star.x,star.y,star.bright?4:3,star.bright?4:3);
+      }
+      ctx.globalAlpha=1;
+
+      // Pixel skyline. Window lights switch in stepped groups.
+      for(let b=0;b<buildings.length;b++){
+        const [x,y,w,h]=buildings[b];
+        ctx.fillStyle="#171f30";ctx.fillRect(x,y,w,h);
+        ctx.fillStyle="#101828";ctx.fillRect(x+5,y+7,Math.max(0,w-10),Math.max(0,h-7));
+        for(let wx=x+7;wx<x+w-5;wx+=13){
+          for(let wy=y+12;wy<214;wy+=17){
+            const seed=Math.floor((wx*3+wy*5+b*11)%7);
+            if(seed<3){
+              const on=reducedMotion.matches||Math.sin(time*0.9+wx*0.11+wy*0.07)>-0.55;
+              ctx.fillStyle=on?"#f4d56f":"#6b6044";
+              ctx.fillRect(wx,wy,4,5);
+            }
+          }
+        }
+      }
+
+      // A low pixel scan beam sweeps across the skyline.
+      const beamX=(time*26)%520-20;
+      ctx.fillStyle="rgba(245,207,105,.22)";
+      ctx.fillRect(Math.floor(beamX/4)*4,102,4,116);
+      ctx.fillStyle="#111a2a";ctx.fillRect(0,194,480,26);
+      // Three stepped traffic lights move along the foreground.
+      for(let i=0;i<5;i++){
+        const lightX=(time*18+i*103)%510-15;
+        ctx.fillStyle=i%2?"#d6b05b":"#e3d9b4";
+        ctx.fillRect(Math.floor(lightX/3)*3,204+(i%2)*5,5,3);
+      }
+    };
+
+    observer.observe(canvas);
+    draw(0);
+    const tick=(now:number)=>{
+      animationFrame=window.requestAnimationFrame(tick);
+      if(!visible||document.hidden||reducedMotion.matches||now-lastFrame<1000/12)return;
+      lastFrame=now;
+      draw(now/1000);
+    };
+    if(!reducedMotion.matches) animationFrame=window.requestAnimationFrame(tick);
+    return()=>{
+      window.cancelAnimationFrame(animationFrame);
+      observer.disconnect();
+    };
   },[]);
-  return <div className="chennai-pixel-scene"><canvas ref={ref} role="img" aria-label="Pixel art Chennai skyline"/><span>CHENNAI · AIR QUALITY</span><strong>{value}</strong></div>;
+  return <div className="chennai-pixel-scene">
+    <canvas ref={ref} role="img" aria-label="Animated pixel art Chennai skyline"/>
+    <span>CHENNAI · AIR QUALITY</span>
+    <strong>{value}</strong>
+    <small className="chennai-scene-motion-label">PIXEL SCENE · 12 FPS</small>
+  </div>;
+}
+
+type SkyFrame = {
+  image_id: string | null;
+  captured_at: string;
+  detector: string | null;
+  detector_confidence: number | null;
+  rain_truth: string | null;
+  truth_mm_hr: number | null;
+};
+type SkyCamera = {
+  camera_id: string;
+  captured_at: string | null;
+  detector: string | null;
+  detector_confidence: number | null;
+  rain_truth: string | null;
+  truth_mm_hr: number | null;
+  frames: SkyFrame[];
+};
+type SkyDataset = {
+  source: string;
+  camera_count: number;
+  latest_captured_at: string | null;
+  cameras: SkyCamera[];
+};
+
+function SkyCameraCard({camera,apiBase}:{camera:SkyCamera;apiBase:string}) {
+  const [frameIndex,setFrameIndex]=useState(0);
+  const [imageFailed,setImageFailed]=useState(false);
+  const frames=[...camera.frames].reverse();
+  const frame=frames.length?frames[frameIndex%frames.length]:null;
+  useEffect(()=>{
+    const reduced=window.matchMedia("(prefers-reduced-motion: reduce)");
+    if(reduced.matches||frames.length<2)return;
+    const timer=window.setInterval(()=>setFrameIndex((index)=>(index+1)%frames.length),1200);
+    return()=>window.clearInterval(timer);
+  },[frames.length]);
+  useEffect(()=>{setImageFailed(false);},[frame?.image_id]);
+  const imageUrl=frame?.image_id?apiBase+"/api/chennai-aqi/sky/image/"+encodeURIComponent(frame.image_id):"";
+  return <article className="chennai-sky-camera">
+    <div className="chennai-sky-frame">
+      {imageUrl&&!imageFailed?<img src={imageUrl} alt={camera.camera_id+" source camera frame"} onError={()=>setImageFailed(true)}/>:<div className="chennai-sky-image-missing">CAMERA FRAME UNAVAILABLE</div>}
+      <span className="chennai-sky-rec"><i/> FRAME REPLAY</span>
+      <span className="chennai-sky-camera-id">{camera.camera_id.replaceAll("_"," ").toUpperCase()}</span>
+    </div>
+    <div className="chennai-sky-camera-meta">
+      <strong>{camera.rain_truth||"Unclassified"}</strong>
+      <span>{camera.truth_mm_hr===null||camera.truth_mm_hr===undefined?"—":camera.truth_mm_hr.toFixed(1)+" mm/h"}</span>
+    </div>
+    <small>{frame?age(frame.captured_at):"No frame timestamp"} · {frames.length} frames</small>
+  </article>;
 }
 
 export default function ChennaiAqiDashboard({ apiBase = "" }: { apiBase?: string }) {
