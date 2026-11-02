@@ -78,7 +78,7 @@ The API subscribes to telemetry, state, and availability topics under `MQTT_TOPI
 5. **Chennai AQI Map** — a pixel-art AQI city summary and MapLibre station map using the public Chennai station feed referenced by Reclaim Chennai's dashboard.
 6. **Power Map** — Reclaim Chennai's India power-station and transmission-grid map in its own independent tab.
 
-The mock power meter sends synthetic single-phase electrical values through MQTT; it is not connected to a physical energy meter. Voltage/current/power/energy values are illustrative only. The mock energy counter resets when the mock process restarts.
+The mock MQ-135 sensor uses a slowly drifting bounded signal and advances only when MQTT telemetry is generated; HTTP status reads reuse the most recent sensor sample so frontend polling does not change the chart waveform. The mock power meter sends synthetic single-phase electrical values through MQTT; it is not connected to a physical energy meter. Voltage/current/power/energy values are illustrative only. The mock energy counter resets when the mock process restarts.
 
 ### Electricity carbon estimate
 
