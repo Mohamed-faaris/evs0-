@@ -608,7 +608,7 @@ app.get("/api/power-meter/forecast", (c) => {
       mae_w: method.validation.mae_w,
       rmse_w: method.validation.rmse_w,
       validation_samples: method.validation.samples,
-      projections: projectModelEnergy(method.forecast)
+      projections: projectModelEnergy(method.forecast!)
     })),
     {
       id: "weighted_ensemble",
