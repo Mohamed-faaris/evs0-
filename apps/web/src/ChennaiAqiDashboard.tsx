@@ -3,9 +3,9 @@ import type { CSSProperties } from "react";
 import { AlertCircle, Clock3, ExternalLink, Filter, MapPin, RefreshCw, Search } from "lucide-react";
 
 type Station = {
-  id: string; name: string; source: string;
+  id: string; name: string; source: string; city: string;
   lat: number | null; lon: number | null; aqi: number | null;
-  updatedAt: string | null; pollutants: Record<string, number>;
+  updatedAt: string | null; scrapedAt: string | null; pollutants: Record<string, number>;
 };
 type FeedState = "loading" | "online" | "offline";
 const CITY_CENTER: [number, number] = [80.2667, 13.0833];
@@ -13,7 +13,9 @@ const POLLUTANTS = [
   { id: "aqi", label: "AQI" }, { id: "pm25", label: "PM2.5" },
   { id: "pm10", label: "PM10" }, { id: "no2", label: "NO₂" },
   { id: "so2", label: "SO₂" }, { id: "o3", label: "O₃" },
-  { id: "co", label: "CO" }, { id: "nh3", label: "NH₃" }, { id: "tvoc", label: "TVOC" }
+  { id: "co", label: "CO" }, { id: "nh3", label: "NH₃" }, { id: "tvoc", label: "TVOC" },
+  { id: "noise", label: "NOISE" }, { id: "temp_c", label: "TEMP" },
+  { id: "wind_kph", label: "WIND" }, { id: "rain_accum_mm", label: "RAIN" }
 ];
 
 function num(value: unknown): number | null {
@@ -43,38 +45,54 @@ function rowsFrom(payload: unknown): unknown[] {
 }
 
 function normalize(payload: unknown): Station[] {
-  const pollutantKeys = POLLUTANTS.filter((item) => item.id !== "aqi").map((item) => item.id);
+  const pollutantSources: Record<string, string[]> = {
+    pm25: ["pm25"],
+    pm10: ["pm10"],
+    no2: ["no2"],
+    so2: ["so2"],
+    o3: ["ozone", "o3"],
+    co: ["co"],
+    nh3: ["nh3"],
+    tvoc: ["tvoc"],
+    noise: ["noise"],
+    temp_c: ["temp_c"],
+    wind_kph: ["wind_kph"],
+    rain_accum_mm: ["rain_accum_mm", "precip_mm"]
+  };
+
   return rowsFrom(payload).flatMap((entry) => {
     if (!entry || typeof entry !== "object") return [];
     const raw = entry as Record<string, unknown>;
-    const geo = raw.geo && typeof raw.geo === "object" ? raw.geo as Record<string, unknown> : {};
-    const coords = Array.isArray(raw.coordinates) ? raw.coordinates : null;
-    const lat = num(raw.lat ?? raw.latitude ?? geo.lat ?? (coords ? coords[1] : null));
-    const lon = num(raw.lon ?? raw.lng ?? raw.longitude ?? geo.lon ?? geo.lng ?? (coords ? coords[0] : null));
-    const aqi = num(raw.aqi ?? raw.AQI ?? raw.current_aqi ?? raw.index);
-    const values = (raw.pollutants ?? raw.measurements ?? raw.iaqi ?? raw.metrics ?? {}) as Record<string, unknown>;
+    const lat = num(raw.latitude ?? raw.lat);
+    const lon = num(raw.longitude ?? raw.lon ?? raw.lng);
+    // Reclaim Chennai's selected dashboard metric is aqi_in, not the
+    // generic aqi field. Keep aqi as fallback for stations without aqi_in.
+    const aqi = num(raw.aqi_in ?? raw.aqi ?? raw.AQI ?? raw.current_aqi ?? raw.index);
     const pollutants: Record<string, number> = {};
-    for (const key of pollutantKeys) {
-      const value = num(values[key] ?? raw[key] ?? raw[key.toUpperCase()]);
-      if (value !== null) pollutants[key] = value;
+    for (const [metric, keys] of Object.entries(pollutantSources)) {
+      const value = keys.map((key) => num(raw[key])).find((item) => item !== null) ?? null;
+      if (value !== null) pollutants[metric] = value;
     }
-    const updated = raw.timestamp ?? raw.updated_at ?? raw.last_updated ?? raw.time;
-    const name = String(raw.name ?? raw.station_name ?? raw.location ?? raw.title ?? "Unnamed station");
+    const updated = raw.station_updated_at ?? raw.source_updated_at ?? raw.updated_at ?? raw.timestamp ?? raw.time;
+    const scraped = raw.scraped_at;
+    const name = String(raw.display_name ?? raw.location_name ?? raw.name ?? raw.station_name ?? raw.location ?? raw.title ?? "Unnamed station");
     const source = String(raw.source ?? raw.provider ?? raw.network ?? raw.source_name ?? "Source not reported");
+    const city = String(raw.city ?? "Unknown area");
     const providedId = raw.uid ?? raw.id ?? raw.station_id ?? raw.code;
-    // A deterministic fingerprint keeps selection stable when an upstream omits
-    // station IDs and reorders its response array between refreshes.
     const fallbackId = [name, source, lat ?? "", lon ?? ""].map((part) => encodeURIComponent(String(part))).join("|");
+
     return [{
       id: providedId === undefined || providedId === null || String(providedId).trim() === ""
         ? "derived:" + fallbackId
         : String(providedId),
       name,
       source,
-      lat: lat !== null && lat > 12.5 && lat < 13.8 ? lat : null,
-      lon: lon !== null && lon > 79.5 && lon < 81 ? lon : null,
+      city,
+      lat: lat !== null && lat > 12.3 && lat < 14 && lon !== null && lon > 79.4 && lon < 81.2 ? lat : null,
+      lon: lon !== null && lon > 79.4 && lon < 81.2 && lat !== null && lat > 12.3 && lat < 14 ? lon : null,
       aqi,
       updatedAt: typeof updated === "string" || typeof updated === "number" ? String(updated) : null,
+      scrapedAt: typeof scraped === "string" || typeof scraped === "number" ? String(scraped) : null,
       pollutants
     }];
   });
@@ -348,54 +366,42 @@ function PixelCity({ value }: { value: string }) {
   </div>;
 }
 
-type SkyFrame = {
-  image_id: string | null;
-  captured_at: string;
-  detector: string | null;
-  detector_confidence: number | null;
-  rain_truth: string | null;
-  truth_mm_hr: number | null;
-};
 type SkyCamera = {
+  id: number;
   camera_id: string;
-  captured_at: string | null;
-  detector: string | null;
-  detector_confidence: number | null;
+  captured_at: string;
+  verdict: string | null;
+  confidence: number | null;
   rain_truth: string | null;
-  truth_mm_hr: number | null;
-  frames: SkyFrame[];
+  name: string | null;
+  bearing: number | null;
+  image: string;
 };
 type SkyDataset = {
-  source: string;
-  camera_count: number;
-  latest_captured_at: string | null;
   cameras: SkyCamera[];
+  site?: { name?: string; credit?: string; url?: string };
+  hours?: number;
+  end?: string;
+  totals?: { frames?: number; labelled?: number; wet?: number; agree?: number; judged?: number; since?: string };
+  series?: Array<Record<string, unknown>>;
 };
 
 function SkyCameraCard({camera,apiBase}:{camera:SkyCamera;apiBase:string}) {
-  const [frameIndex,setFrameIndex]=useState(0);
   const [imageFailed,setImageFailed]=useState(false);
-  const frames=[...camera.frames].reverse();
-  const frame=frames.length?frames[frameIndex%frames.length]:null;
-  useEffect(()=>{
-    const reduced=window.matchMedia("(prefers-reduced-motion: reduce)");
-    if(reduced.matches||frames.length<2)return;
-    const timer=window.setInterval(()=>setFrameIndex((index)=>(index+1)%frames.length),1200);
-    return()=>window.clearInterval(timer);
-  },[frames.length]);
-  useEffect(()=>{setImageFailed(false);},[frame?.image_id]);
-  const imageUrl=frame?.image_id?apiBase+"/api/chennai-aqi/sky/image/"+encodeURIComponent(frame.image_id):"";
+  const imageMatch=camera.image.match(/^\/sky\/(\d{1,10})\.jpg$/);
+  const imageUrl=imageMatch?apiBase+"/api/chennai-aqi/sky/image/"+imageMatch[1]:"";
+  const rainLabel=camera.rain_truth&&camera.rain_truth!=="unknown"?camera.rain_truth:camera.verdict||"Unclassified";
   return <article className="chennai-sky-camera">
     <div className="chennai-sky-frame">
-      {imageUrl&&!imageFailed?<img src={imageUrl} alt={camera.camera_id+" source camera frame"} onError={()=>setImageFailed(true)}/>:<div className="chennai-sky-image-missing">CAMERA FRAME UNAVAILABLE</div>}
-      <span className="chennai-sky-rec"><i/> FRAME REPLAY</span>
-      <span className="chennai-sky-camera-id">{camera.camera_id.replaceAll("_"," ").toUpperCase()}</span>
+      {imageUrl&&!imageFailed?<img src={imageUrl} alt={(camera.name||camera.camera_id)+" source camera frame"} onError={()=>setImageFailed(true)}/>:<div className="chennai-sky-image-missing">CAMERA FRAME UNAVAILABLE</div>}
+      <span className="chennai-sky-rec"><i/> SOURCE FRAME</span>
+      <span className="chennai-sky-camera-id">{(camera.name||camera.camera_id).toUpperCase()}</span>
     </div>
     <div className="chennai-sky-camera-meta">
-      <strong>{camera.rain_truth||"Unclassified"}</strong>
-      <span>{camera.truth_mm_hr===null||camera.truth_mm_hr===undefined?"—":camera.truth_mm_hr.toFixed(1)+" mm/h"}</span>
+      <strong>{rainLabel}</strong>
+      <span>{camera.confidence===null||camera.confidence===undefined?"—":Math.round(camera.confidence*100)+"%"}</span>
     </div>
-    <small>{frame?age(frame.captured_at):"No frame timestamp"} · {frames.length} frames</small>
+    <small>{age(camera.captured_at)} · bearing {camera.bearing??"—"}°</small>
   </article>;
 }
 
@@ -538,17 +544,17 @@ export default function ChennaiAqiDashboard({ apiBase = "" }: { apiBase?: string
 
     <section className="chennai-sky-section">
       <div className="chennai-sky-head">
-        <div><div className="eyebrow">RECLAIM CHENNAI · PUBLIC CAMERA DATASET</div><h3>What the sky looks like</h3><p>Short replay of the latest published camera frames. The source's rain labels are shown with their capture time.</p></div>
+        <div><div className="eyebrow">RECLAIM CHENNAI · PUBLIC CAMERA DATASET</div><h3>What the sky looks like</h3><p>Short replay of the latest published camera frames. The source camera frames and camera-derived rain labels are shown with their capture time.</p></div>
         <span className={"chennai-feed-status "+skyState}><i/>{skyState==="online"?"SOURCE CONNECTED":skyState==="loading"?"LOADING FRAMES":"CAMERA FEED UNAVAILABLE"}</span>
       </div>
       {skyData?.cameras?.length?<div className="chennai-sky-grid">
         {skyData.cameras.slice(0,4).map(camera=><SkyCameraCard key={camera.camera_id} camera={camera} apiBase={apiBase}/>)}
       </div>:<div className="chennai-sky-empty">{skyState==="loading"?"Loading source camera frames…":skyError||"No camera records available."}</div>}
       <div className="chennai-sky-foot">
-        <span>{skyData?.camera_count??0} camera streams · Reclaim Chennai public dataset</span>
-        <span>Latest capture: {age(skyData?.latest_captured_at??null)}</span>
+        <span>{skyData?.cameras?.length??0} camera streams · Reclaim Chennai public dataset</span>
+        <span>Latest capture: {age(skyData?.end??skyData?.cameras?.map(camera=>camera.captured_at).sort((a,b)=>Date.parse(b)-Date.parse(a))[0]??null)}</span>
       </div>
-      <small className="chennai-sky-disclaimer">Camera replay is a visualization of archived source frames, not a live video stream. Rain labels and mm/h values are source annotations, not independent EVS0 measurements.</small>
+      <small className="chennai-sky-disclaimer">These are source camera snapshots, not a live video stream. Rain labels and confidence values are source annotations, not independent EVS0 measurements.</small>
     </section>
 
     <div className="chennai-map-layout">
