@@ -476,6 +476,7 @@ export default function ChennaiAqiDashboard({ apiBase = "" }: { apiBase?: string
   const [skyData,setSkyData]=useState<SkyDataset|null>(null);
   const [skyState,setSkyState]=useState<FeedState>("loading");
   const [skyError,setSkyError]=useState("");
+  const [skyRetry,setSkyRetry]=useState(0);
   const [trendHours,setTrendHours]=useState(24);
   const [trendData,setTrendData]=useState<TrendDataset|null>(null);
   const [trendState,setTrendState]=useState<FeedState>("loading");
@@ -569,7 +570,7 @@ export default function ChennaiAqiDashboard({ apiBase = "" }: { apiBase?: string
       controller.abort();
       if(timer!==undefined)window.clearTimeout(timer);
     };
-  },[apiBase,retry]);
+  },[apiBase,retry,skyRetry]);
 
   useEffect(()=>{
     let disposed=false;
@@ -676,8 +677,8 @@ export default function ChennaiAqiDashboard({ apiBase = "" }: { apiBase?: string
 
     <section className="chennai-sky-section">
       <div className="chennai-sky-head">
-        <div><div className="eyebrow">RECLAIM CHENNAI · PUBLIC CAMERA DATASET</div><h3>What the sky looks like</h3><p>Short replay of the latest published camera frames. The source camera frames and camera-derived rain labels are shown with their capture time.</p></div>
-        <span className={"chennai-feed-status "+skyState}><i/>{skyState==="online"?"SOURCE CONNECTED":skyState==="loading"?"LOADING FRAMES":"CAMERA FEED UNAVAILABLE"}</span>
+        <div><div className="eyebrow">RECLAIM CHENNAI · PUBLIC CAMERA DATASET</div><h3>What the sky looks like</h3><p>Latest published source-camera snapshots and camera-derived rain labels, with capture times.</p></div>
+        <div className="chennai-sky-status-actions"><span className={"chennai-feed-status "+skyState}><i/>{skyState==="online"?"SOURCE CONNECTED":skyState==="loading"?"LOADING FRAMES":"CAMERA FEED UNAVAILABLE"}</span><button className="chennai-refresh" onClick={()=>setSkyRetry(value=>value+1)} disabled={skyState==="loading"}><RefreshCw size={13}/> Refresh frames</button></div>
       </div>
       {skyData?.cameras?.length?<div className="chennai-sky-grid">
         {skyData.cameras.slice(0,4).map(camera=><SkyCameraCard key={camera.camera_id} camera={camera} apiBase={apiBase}/>)}
