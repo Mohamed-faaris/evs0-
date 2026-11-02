@@ -309,6 +309,22 @@ function getPowerMeterSessionHistory(): Telemetry[] {
   return collectPowerMeterReadings(false);
 }
 
+type PowerMeterLiveness = "online" | "offline" | "stale" | "empty";
+
+// Freshness is a liveness gate on the newest sample only: it detects a
+// disconnected device. It must never truncate the historical samples the
+// forecasting model trains on, otherwise POWER_METER_MAX_AGE_SECONDS
+// silently caps history at (max age / publish interval) samples.
+function resolvePowerMeterLiveness(): PowerMeterLiveness {
+  if (availability.get(POWER_METER_DEVICE_ID)?.status !== "online") return "offline";
+  const latest = getPowerMeterSessionHistory().at(-1);
+  if (!latest) return "empty";
+  const receivedAt = Date.parse(latest.received_at);
+  const ageMs = Date.now() - receivedAt;
+  if (!Number.isFinite(receivedAt) || ageMs < 0 || ageMs > POWER_METER_MAX_AGE_MS) return "stale";
+  return "online";
+}
+
 app.get("/api/power-meter/carbon", (c) => {
   const latest = getCurrentPowerMeterReadings().at(-1) || null;
   const rawEnergyKwh = latest?.readings?.energy_kwh;
@@ -375,8 +391,11 @@ app.get("/api/aqi/response-forecast", (c) => {
 });
 
 app.get("/api/power-meter/forecast", (c) => {
-  const currentMeterReadings = getCurrentPowerMeterReadings();
-  const samples = currentMeterReadings
+  // Gate on device liveness (availability online + newest sample fresh), then
+  // train on the full current-session history instead of only fresh samples.
+  const liveness = resolvePowerMeterLiveness();
+  const sessionHistory = liveness === "online" ? getPowerMeterSessionHistory() : [];
+  const samples = sessionHistory
     .map((reading) => reading.readings?.active_power_w)
     .filter((value): value is number => typeof value === "number" && Number.isFinite(value) && value >= 0)
     .slice(-FORECAST_WINDOW_SAMPLES);
@@ -384,9 +403,13 @@ app.get("/api/power-meter/forecast", (c) => {
   if (smoothedPower === null) {
     return c.json({
       available: false,
-      reason: currentMeterReadings.length === 0
-        ? "No fresh, valid power-meter samples are available for the current online meter session."
-        : `Need at least ${FORECAST_MIN_SAMPLES} valid power samples; currently have ${samples.length}.`,
+      reason: liveness === "offline"
+        ? "Power meter MQTT availability is offline; estimates are paused until the device reconnects."
+        : liveness === "stale"
+          ? `The latest power-meter sample is older than POWER_METER_MAX_AGE_SECONDS (${POWER_METER_MAX_AGE_MS / 1000} seconds); the device looks disconnected.`
+          : liveness === "empty"
+            ? "No valid power-meter samples are available for the current online meter session."
+            : `Need at least ${FORECAST_MIN_SAMPLES} valid power samples; currently have ${samples.length}.`,
       model: { name: "simple_exponential_smoothing", alpha: ENERGY_FORECAST_ALPHA, samples: samples.length }
     });
   }
