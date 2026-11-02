@@ -414,7 +414,7 @@ app.get("/api/aqi/predictions", (c) => c.json({
   available: false,
   reason: "No validated prediction model is configured yet. Predictions will be enabled after collecting and validating historical data."
 }));
-app.get("/", (c) => c.json({ name: "EVS0 Dashboard API", docs: ["/api/health", "/api/devices", "/api/chennai-aqi/source", "/api/chennai-aqi/stations", "/api/chennai-aqi/sky", "/api/chennai-aqi/sky/image/:id", "/api/readings/latest", "/api/readings/history", "/api/power-meter/latest", "/api/power-meter/history", "/api/power-meter/carbon", "/api/power-meter/forecast", "/api/aqi/current", "/api/aqi/predictions", "/api/aqi/response-forecast"] }));
+app.get("/", (c) => c.json({ name: "EVS0 Dashboard API", docs: ["/api/health", "/api/devices", "/api/chennai-aqi/source", "/api/chennai-aqi/stations", "/api/chennai-aqi/sky", "/api/chennai-aqi/trend", "/api/chennai-aqi/sky/image/:id", "/api/readings/latest", "/api/readings/history", "/api/power-meter/latest", "/api/power-meter/history", "/api/power-meter/carbon", "/api/power-meter/forecast", "/api/aqi/current", "/api/aqi/predictions", "/api/aqi/response-forecast"] }));
 
 // Public Reclaim Chennai city-station source. Keep this fixed to the source
 // declared by the AQI dashboard; browser clients call EVS0, not the upstream host.
@@ -624,7 +624,7 @@ app.get("/api/chennai-aqi/sky/image/:id", async (c) => {
   }
   try {
     const upstream = await fetch("https://pol.reclaimchennai.city/sky/" + id + ".jpg", {
-      headers: { Accept: "image/jpeg", "User-Agent": "EVS0-Chennai-AQI-Proxy/1.0" },
+      headers: { Accept: "image/jpeg", Referer: "https://pol.reclaimchennai.city/", "User-Agent": "EVS0-Chennai-AQI-Proxy/1.0" },
       redirect: "error",
       signal: AbortSignal.timeout(10_000)
     });
@@ -779,6 +779,93 @@ app.get("/api/chennai-aqi/stations", async (c) => {
     if (chennaiAqiRefreshPromise === refreshPromise) {
       chennaiAqiRefreshPromise = null;
     }
+  }
+});
+
+const CHENNAI_TREND_METRICS = new Set([
+  "aqi_in", "aqi", "pm25", "pm10", "no2", "so2", "ozone", "co", "nh3",
+  "noise", "temp_c", "wind_kph", "precip_mm", "rain_accum_mm"
+]);
+const chennaiTrendCache = new Map<string, { expiresAt: number; payload: unknown; fetchedAt: string }>();
+const chennaiTrendInflight = new Map<string, Promise<{ payload: unknown; fetchedAt: string }>>();
+
+app.get("/api/chennai-aqi/trend", async (c) => {
+  const metric = c.req.query("metric") || "aqi_in";
+  const hours = Number(c.req.query("hours") || 24);
+  const uid = c.req.query("uid") || "all";
+  if (!CHENNAI_TREND_METRICS.has(metric)) {
+    return c.json({ error: "invalid_metric", message: "Unsupported AQI trend metric." }, 400);
+  }
+  if (!Number.isInteger(hours) || hours < 1 || hours > 720) {
+    return c.json({ error: "invalid_hours", message: "Trend hours must be an integer from 1 to 720." }, 400);
+  }
+  if (uid !== "all" && !/^[A-Za-z0-9_-]{1,64}$/.test(uid)) {
+    return c.json({ error: "invalid_station_id", message: "Station ID contains unsupported characters." }, 400);
+  }
+
+  const cacheKey = metric + ":" + hours + ":" + uid;
+  const cached = chennaiTrendCache.get(cacheKey);
+  if (cached && cached.expiresAt > Date.now()) {
+    c.header("X-AQI-Cache", "HIT");
+    c.header("X-AQI-Updated-At", cached.fetchedAt);
+    return c.json(cached.payload, 200, { "Cache-Control": "public, max-age=30" });
+  }
+
+  let request = chennaiTrendInflight.get(cacheKey);
+  if (!request) {
+    request = (async () => {
+      const url = new URL("https://pol.reclaimchennai.city/api/trend");
+      url.searchParams.set("metric", metric);
+      url.searchParams.set("hours", String(hours));
+      url.searchParams.set("uid", uid);
+      const upstream = await fetch(url, {
+        headers: {
+          Accept: "application/json",
+          Referer: "https://pol.reclaimchennai.city/",
+          "User-Agent": "EVS0-Chennai-AQI-Proxy/1.0"
+        },
+        redirect: "error",
+        signal: AbortSignal.timeout(12_000)
+      });
+      if (!upstream.ok) {
+        const status = upstream.status;
+        await upstream.body?.cancel().catch(() => {});
+        throw new Error("Reclaim Chennai trend API returned HTTP " + status + ".");
+      }
+      const contentType = upstream.headers.get("content-type") || "";
+      if (!contentType.toLowerCase().includes("json")) {
+        await upstream.body?.cancel().catch(() => {});
+        throw new Error("Reclaim Chennai trend API returned non-JSON content.");
+      }
+      const payload: unknown = await upstream.json();
+      if (!payload || typeof payload !== "object" || !Array.isArray((payload as { points?: unknown }).points)) {
+        throw new Error("Reclaim Chennai trend API returned an invalid points payload.");
+      }
+      return { payload, fetchedAt: new Date().toISOString() };
+    })();
+    chennaiTrendInflight.set(cacheKey, request);
+  }
+
+  try {
+    const snapshot = await request;
+    if (chennaiTrendInflight.get(cacheKey) === request) {
+      chennaiTrendCache.set(cacheKey, {
+        payload: snapshot.payload,
+        fetchedAt: snapshot.fetchedAt,
+        expiresAt: Date.now() + 60_000
+      });
+    }
+    c.header("X-AQI-Cache", "MISS");
+    c.header("X-AQI-Updated-At", snapshot.fetchedAt);
+    return c.json(snapshot.payload, 200, { "Cache-Control": "public, max-age=30" });
+  } catch (error) {
+    console.warn("[CHENNAI-AQI] Trend API unavailable:", error instanceof Error ? error.message : "Unknown error");
+    return c.json({
+      error: "chennai_aqi_trend_unavailable",
+      message: error instanceof Error ? error.message : "Trend history is unavailable."
+    }, 502);
+  } finally {
+    if (chennaiTrendInflight.get(cacheKey) === request) chennaiTrendInflight.delete(cacheKey);
   }
 });
 
