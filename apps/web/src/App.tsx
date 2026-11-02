@@ -160,10 +160,34 @@ export default function App() {
     };
   }, []);
 
-  const chartData = useMemo(() => history.map((r) => ({
-    time: r.timestamp ? new Date(r.timestamp).toLocaleTimeString() : new Date(r.received_at).toLocaleTimeString(),
-    adc: r.readings?.raw_adc ?? null
-  })), [history]);
+  const chartData = useMemo(() => {
+    const unique = new Map<string, Reading>();
+    for (const sample of history) {
+      const rawAdc = sample.readings?.raw_adc;
+      if (
+        sample.valid === false ||
+        typeof rawAdc !== "number" ||
+        !Number.isFinite(rawAdc) ||
+        rawAdc < 0 ||
+        rawAdc > 4095
+      ) continue;
+
+      const sampleKey = sample.timestamp || sample.received_at;
+      unique.set(sampleKey, sample);
+    }
+
+    return [...unique.values()]
+      .sort((left, right) =>
+        Date.parse(left.timestamp || left.received_at) -
+        Date.parse(right.timestamp || right.received_at)
+      )
+      .map((sample) => ({
+        time: sample.timestamp
+          ? new Date(sample.timestamp).toLocaleTimeString()
+          : new Date(sample.received_at).toLocaleTimeString(),
+        adc: sample.readings!.raw_adc!
+      }));
+  }, [history]);
 
   const powerChartData = useMemo(() => powerMeterHistory.map((r) => ({
     time: r.timestamp ? new Date(r.timestamp).toLocaleTimeString() : new Date(r.received_at).toLocaleTimeString(),
@@ -224,7 +248,7 @@ export default function App() {
           <div className="panelhead"><div><div className="eyebrow">SENSOR SIGNAL</div><h3>ADC history</h3></div><span className="unit">RAW COUNTS</span></div>
           {chartData.length ? <div className="chart"><ResponsiveContainer width="100%" height="100%"><AreaChart data={chartData}>
             <defs><linearGradient id="fillAdc" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor="#d49a16" stopOpacity={.3}/><stop offset="95%" stopColor="#d49a16" stopOpacity={0}/></linearGradient></defs>
-            <CartesianGrid strokeDasharray="3 4" vertical={false} stroke="#e5e0d5"/><XAxis dataKey="time" tick={{fontSize:10}} minTickGap={28}/><YAxis tick={{fontSize:10}} width={42}/><Tooltip/>
+            <CartesianGrid strokeDasharray="3 4" vertical={false} stroke="#e5e0d5"/><XAxis dataKey="time" tick={{fontSize:10}} minTickGap={28}/><YAxis tick={{fontSize:10}} width={48} domain={["dataMin - 50", "dataMax + 50"]}/><Tooltip/>
             <Area type="monotone" dataKey="adc" stroke="#a56e00" fill="url(#fillAdc)" strokeWidth={2} connectNulls/>
           </AreaChart></ResponsiveContainer></div> : <div className="empty">Waiting for MQ-135 MQTT telemetry…</div>}
         </article>
