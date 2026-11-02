@@ -728,11 +728,34 @@ app.get("/api/chennai-aqi/sky/image/:id", async (c) => {
       await upstream.body.cancel().catch(() => {});
       return c.json({ error: "sky_image_too_large", message: "The source camera frame exceeded 2 MiB." }, 502);
     }
-    c.header("Cache-Control", "public, max-age=900, stale-while-revalidate=3600");
-    c.header("X-Content-Type-Options", "nosniff");
-    return new Response(upstream.body, {
+    const reader = upstream.body.getReader();
+    const chunks: Uint8Array[] = [];
+    let totalBytes = 0;
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        totalBytes += value.byteLength;
+        if (totalBytes > 2 * 1024 * 1024) {
+          await reader.cancel().catch(() => {});
+          return c.json({ error: "sky_image_too_large", message: "The source camera frame exceeded 2 MiB." }, 502);
+        }
+        chunks.push(value);
+      }
+    } finally {
+      reader.releaseLock();
+    }
+    const bytes = new Uint8Array(totalBytes);
+    let offset = 0;
+    for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
+    return new Response(bytes, {
       status: 200,
-      headers: { "Content-Type": "image/jpeg", "Cache-Control": "public, max-age=900, stale-while-revalidate=3600", "X-Content-Type-Options": "nosniff" }
+      headers: {
+        "Content-Type": "image/jpeg",
+        "Content-Length": String(totalBytes),
+        "Cache-Control": "public, max-age=900, stale-while-revalidate=3600",
+        "X-Content-Type-Options": "nosniff"
+      }
     });
   } catch (error) {
     return c.json({
