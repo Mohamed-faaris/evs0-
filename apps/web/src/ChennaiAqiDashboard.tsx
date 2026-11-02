@@ -281,10 +281,16 @@ function PixelCity({ value }: { value: string }) {
     const ctx = canvas?.getContext("2d");
     if (!canvas || !ctx) return;
     const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
-    const observer = new IntersectionObserver((entries) => {
-      visible = entries.some((entry) => entry.isIntersecting);
-    });
     let visible = true;
+    let startAnimation = () => {};
+    let stopAnimation = () => {};
+    const observer = new IntersectionObserver((entries) => {
+      const nextVisible = entries.some((entry) => entry.isIntersecting);
+      if (visible === nextVisible) return;
+      visible = nextVisible;
+      if (visible) startAnimation();
+      else stopAnimation();
+    });
     let animationFrame = 0;
     let lastFrame = 0;
     canvas.width = 480;
@@ -345,17 +351,51 @@ function PixelCity({ value }: { value: string }) {
       }
     };
 
+    const tick=(now:number)=>{
+      if(!visible||document.hidden||reducedMotion.matches){
+        animationFrame=0;
+        return;
+      }
+      if(now-lastFrame>=1000/12){
+        lastFrame=now;
+        draw(now/1000);
+      }
+      animationFrame=window.requestAnimationFrame(tick);
+    };
+    stopAnimation=()=>{
+      if(animationFrame)window.cancelAnimationFrame(animationFrame);
+      animationFrame=0;
+    };
+    startAnimation=()=>{
+      stopAnimation();
+      draw(performance.now()/1000);
+      if(visible&&!document.hidden&&!reducedMotion.matches){
+        lastFrame=0;
+        animationFrame=window.requestAnimationFrame(tick);
+      }
+    };
+    const handleMotionChange=()=>{
+      if(reducedMotion.matches){
+        stopAnimation();
+        draw(0);
+      }else{
+        startAnimation();
+      }
+    };
+    const handleVisibilityChange=()=>{
+      if(document.hidden)stopAnimation();
+      else if(visible&&!reducedMotion.matches)startAnimation();
+    };
+
     observer.observe(canvas);
     draw(0);
-    const tick=(now:number)=>{
-      animationFrame=window.requestAnimationFrame(tick);
-      if(!visible||document.hidden||reducedMotion.matches||now-lastFrame<1000/12)return;
-      lastFrame=now;
-      draw(now/1000);
-    };
-    if(!reducedMotion.matches) animationFrame=window.requestAnimationFrame(tick);
+    startAnimation();
+    reducedMotion.addEventListener("change",handleMotionChange);
+    document.addEventListener("visibilitychange",handleVisibilityChange);
     return()=>{
-      window.cancelAnimationFrame(animationFrame);
+      stopAnimation();
+      reducedMotion.removeEventListener("change",handleMotionChange);
+      document.removeEventListener("visibilitychange",handleVisibilityChange);
       observer.disconnect();
     };
   },[]);
