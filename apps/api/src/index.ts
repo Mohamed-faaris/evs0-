@@ -423,7 +423,7 @@ let chennaiAqiSourceUrl: URL | null = null;
 if (CHENNAI_AQI_STATIONS_URL) {
   try {
     const parsed = new URL(CHENNAI_AQI_STATIONS_URL);
-    const allowedHosts = new Set(["pol.reclaimchennai.city", "api.airquality.info"]);
+    const allowedHosts = new Set(["pol.reclaimchennai.city", "pol.reclaimchennai.city"]);
     if (
       parsed.protocol !== "https:" ||
       !allowedHosts.has(parsed.hostname) ||
@@ -434,7 +434,7 @@ if (CHENNAI_AQI_STATIONS_URL) {
       parsed.search ||
       parsed.hash
     ) {
-      throw new Error("CHENNAI_AQI_STATIONS_URL must be a confirmed HTTPS /api/ endpoint on pol.reclaimchennai.city or api.airquality.info.");
+      throw new Error("CHENNAI_AQI_STATIONS_URL must be a confirmed HTTPS /api/ endpoint on pol.reclaimchennai.city or pol.reclaimchennai.city.");
     }
     chennaiAqiSourceUrl = parsed;
   } catch (error) {
@@ -795,13 +795,13 @@ app.get("/api/chennai-aqi/source", (c) => c.json({
 app.get("/api/chennai-aqi/stations", async (c) => {
   if (!chennaiAqiSourceUrl) {
     return c.json({
-      error: "chennai_aqi_source_misconfigured",
+      error: "chennai_aqi_station_endpoint_not_configured",
       message: "No confirmed public AQI station endpoint is configured. The Reclaim Chennai public sky-camera dataset is available at /api/chennai-aqi/sky. Set CHENNAI_AQI_STATIONS_URL only after confirming the station API path."
-    }, 503);
+    }, 424);
   }
 
   if (chennaiAqiCache && chennaiAqiCache.expiresAt > Date.now()) {
-    c.header("X-AQI-Source", "api.airquality.info");
+    c.header("X-AQI-Source", "Reclaim Chennai");
     c.header("X-AQI-Cache", "HIT");
     c.header("X-AQI-Updated-At", chennaiAqiCache.fetchedAt);
     return c.json(chennaiAqiCache.payload, 200, { "Cache-Control": "public, max-age=30" });
@@ -825,7 +825,7 @@ app.get("/api/chennai-aqi/stations", async (c) => {
       };
     }
 
-    c.header("X-AQI-Source", "api.airquality.info");
+    c.header("X-AQI-Source", "Reclaim Chennai");
     c.header("X-AQI-Cache", "MISS");
     c.header("X-AQI-Updated-At", snapshot.fetchedAt);
     return c.json(snapshot.payload, 200, { "Cache-Control": "public, max-age=30" });
