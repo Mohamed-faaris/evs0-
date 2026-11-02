@@ -627,8 +627,7 @@ void updateMQTT() {
     if (millis() - lastMQTTTelemetryMs >= MQTT_TELEMETRY_INTERVAL_MS) {
       lastMQTTTelemetryMs = millis();
       if (publishMQTTTelemetry()) {
-        Serial.printf("[MQTT] Telemetry published | seq=%lu | ADC=%d\n",
-          static_cast<unsigned long>(mqttTelemetrySequence), sensorADC);
+        // Successful telemetry publishes are intentionally silent to avoid Serial log spam.
       } else {
         const int publishError = static_cast<int>(mqttClient.lastError());
         Serial.printf("[MQTT] Telemetry publish failed | MQTT error=%d (%s) | free heap=%u bytes\n",
