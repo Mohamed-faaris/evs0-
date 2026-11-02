@@ -7,25 +7,6 @@ type Station = {
   updatedAt: string | null; pollutants: Record<string, number>;
 };
 type FeedState = "loading" | "online" | "offline";
-type MapLibreMap = {
-  addControl: (control: unknown, position?: string) => void;
-  on: (event: string, callback: () => void) => void;
-  easeTo: (options: Record<string, unknown>) => void;
-  remove: () => void;
-};
-type MapLibreMarker = { remove: () => void };
-type MapLibreRuntime = {
-  Map: new (options: Record<string, unknown>) => MapLibreMap;
-  NavigationControl: new (options: Record<string, unknown>) => unknown;
-  Marker: new (options: Record<string, unknown>) => {
-    setLngLat: (coordinates: [number, number]) => {
-      addTo: (map: MapLibreMap) => MapLibreMarker;
-    };
-  };
-};
-declare global {
-  interface Window { maplibregl?: MapLibreRuntime }
-}
 const CITY_CENTER: [number, number] = [80.2667, 13.0833];
 const POLLUTANTS = [
   { id: "aqi", label: "AQI" }, { id: "pm25", label: "PM2.5" },
@@ -128,6 +109,136 @@ function age(value: string | null): string {
   return Math.floor(minutes/1440) + " d ago";
 }
 
+function toWorld(lon: number, lat: number, zoom: number): [number, number] {
+  const scale = 256 * Math.pow(2, zoom);
+  const safeLat = Math.max(-85.05112878, Math.min(85.05112878, lat));
+  const sin = Math.sin(safeLat * Math.PI / 180);
+  return [
+    (lon + 180) / 360 * scale,
+    (0.5 - Math.log((1 + sin) / (1 - sin)) / (4 * Math.PI)) * scale
+  ];
+}
+
+function fromWorld(x: number, y: number, zoom: number): [number, number] {
+  const scale = 256 * Math.pow(2, zoom);
+  const lon = x / scale * 360 - 180;
+  const n = Math.PI - 2 * Math.PI * y / scale;
+  const lat = 180 / Math.PI * Math.atan(Math.sinh(n));
+  return [lon, lat];
+}
+
+function ChennaiTileMap({
+  stations, metric, selected, metricLabel, onSelect
+}: {
+  stations: Station[];
+  metric: string;
+  selected: string | null;
+  metricLabel: string;
+  onSelect: (id: string) => void;
+}) {
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const dragRef = useRef<{ x: number; y: number } | null>(null);
+  const [size, setSize] = useState({ width: 900, height: 570 });
+  const [center, setCenter] = useState<[number, number]>(CITY_CENTER);
+  const [zoom, setZoom] = useState(10);
+  const [tileError, setTileError] = useState(false);
+
+  useEffect(() => {
+    const element = containerRef.current;
+    if (!element) return;
+    const observer = new ResizeObserver((entries) => {
+      const rect = entries[0]?.contentRect;
+      if (rect) setSize({ width: Math.max(1, rect.width), height: Math.max(1, rect.height) });
+    });
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, []);
+
+  const centerWorld = toWorld(center[0], center[1], zoom);
+  const viewLeft = centerWorld[0] - size.width / 2;
+  const viewTop = centerWorld[1] - size.height / 2;
+  const tileCount = Math.pow(2, zoom);
+  const firstTileX = Math.floor(viewLeft / 256);
+  const firstTileY = Math.floor(viewTop / 256);
+  const columns = Math.ceil(size.width / 256) + 1;
+  const rows = Math.ceil(size.height / 256) + 1;
+
+  const tiles: Array<{ key: string; url: string; left: number; top: number }> = [];
+  for (let row = 0; row < rows; row += 1) {
+    for (let column = 0; column < columns; column += 1) {
+      const x = firstTileX + column;
+      const y = firstTileY + row;
+      if (y < 0 || y >= tileCount) continue;
+      const wrappedX = ((x % tileCount) + tileCount) % tileCount;
+      tiles.push({
+        key: zoom + "/" + x + "/" + y,
+        url: "https://tile.openstreetmap.org/" + zoom + "/" + wrappedX + "/" + y + ".png",
+        left: x * 256 - viewLeft,
+        top: y * 256 - viewTop
+      });
+    }
+  }
+
+  const visibleStations = stations.flatMap((station) => {
+    if (station.lat === null || station.lon === null) return [];
+    const [x, y] = toWorld(station.lon, station.lat, zoom);
+    if (x < viewLeft - 30 || x > viewLeft + size.width + 30 ||
+        y < viewTop - 30 || y > viewTop + size.height + 30) return [];
+    return [{ station, left: x - viewLeft, top: y - viewTop, value: valueFor(station, metric) }];
+  });
+
+  const moveBy = (dx: number, dy: number) => {
+    const world = toWorld(center[0], center[1], zoom);
+    setCenter(fromWorld(world[0] - dx, world[1] - dy, zoom));
+  };
+
+  return <div
+    className="chennai-map"
+    ref={containerRef}
+    onPointerDown={(event) => {
+      if ((event.target as HTMLElement).closest("button")) return;
+      dragRef.current = { x: event.clientX, y: event.clientY };
+      event.currentTarget.setPointerCapture(event.pointerId);
+    }}
+    onPointerMove={(event) => {
+      if (!dragRef.current) return;
+      const dx = event.clientX - dragRef.current.x;
+      const dy = event.clientY - dragRef.current.y;
+      dragRef.current = { x: event.clientX, y: event.clientY };
+      moveBy(dx, dy);
+    }}
+    onPointerUp={() => { dragRef.current = null; }}
+    onPointerCancel={() => { dragRef.current = null; }}
+  >
+    <div className="chennai-tile-layer">
+      {tiles.map((tile) => <img
+        key={tile.key}
+        src={tile.url}
+        alt=""
+        draggable={false}
+        onError={() => setTileError(true)}
+        style={{ left: tile.left, top: tile.top }}
+      />)}
+    </div>
+    {visibleStations.map(({ station, left, top, value }) => <button
+      key={station.id}
+      type="button"
+      className={"chennai-map-marker" + (station.id === selected ? " selected" : "")}
+      style={{ left, top, "--marker-color": metric === "aqi" ? aqiColor(station.aqi) : "#4d91c7" } as React.CSSProperties}
+      title={station.name + " · " + (value === null ? "No " + metricLabel + " reading" : metricLabel + " " + value)}
+      onPointerDown={(event) => event.stopPropagation()}
+      onClick={() => onSelect(station.id)}
+    >{value === null ? "·" : String(Math.round(value))}</button>)}
+    <div className="chennai-map-controls" onPointerDown={(event) => event.stopPropagation()}>
+      <button type="button" aria-label="Zoom in" onClick={() => setZoom((value) => Math.min(16, value + 1))}>+</button>
+      <button type="button" aria-label="Zoom out" onClick={() => setZoom((value) => Math.max(7, value - 1))}>−</button>
+      <button type="button" aria-label="Reset map view" onClick={() => { setCenter(CITY_CENTER); setZoom(10); }}>⌂</button>
+    </div>
+    {tileError ? <div className="chennai-map-tile-error">Some OpenStreetMap tiles could not be loaded.</div> : null}
+    <span className="chennai-map-zoom-label">ZOOM {zoom} · DRAG TO PAN</span>
+  </div>;
+}
+
 function PixelCity({ value }: { value: string }) {
   const ref = useRef<HTMLCanvasElement | null>(null);
   useEffect(() => {
@@ -161,17 +272,24 @@ export default function ChennaiAqiDashboard({ apiBase = "" }: { apiBase?: string
   const [query,setQuery]=useState("");
   const [selected,setSelected]=useState<string|null>(null);
   const [retry,setRetry]=useState(0);
-  const mapEl=useRef<HTMLDivElement|null>(null);
-  const mapRef=useRef<MapLibreMap|null>(null);
-  const [mapReady,setMapReady]=useState(false);
-  const markers=useRef<MapLibreMarker[]>([]);
+  const requestSequence=useRef(0);
 
   useEffect(()=>{
-    let active=true;
+    let disposed=false;
+    let timer: number | undefined;
+    let controller: AbortController | null=null;
+
     const load=async()=>{
-      setState("loading");setError("");
+      const requestId=++requestSequence.current;
+      controller?.abort();
+      const currentController=new AbortController();
+      controller=currentController;
+      setState("loading");
+      setError("");
       try{
-        const response=await fetch(apiBase+"/api/chennai-aqi/stations",{headers:{Accept:"application/json"},cache:"no-store"});
+        const response=await fetch(apiBase+"/api/chennai-aqi/stations",{
+          headers:{Accept:"application/json"},cache:"no-store",signal:currentController.signal
+        });
         const payload=await response.json().catch(()=>null);
         if(!response.ok){
           const message=payload&&typeof payload==="object"&&"message" in payload?String((payload as {message:unknown}).message):"Station feed returned HTTP "+response.status;
@@ -179,53 +297,30 @@ export default function ChennaiAqiDashboard({ apiBase = "" }: { apiBase?: string
         }
         const list=normalize(payload);
         if(!list.length) throw new Error("The upstream responded, but station records could not be identified. No example readings are substituted.");
-        if(!active)return;
-        setStations(list);setState("online");setUpdated(new Date().toISOString());
+        if(disposed||requestId!==requestSequence.current)return;
+        setStations(list);
+        setState("online");
+        setUpdated(response.headers.get("X-AQI-Updated-At"));
         setSelected(current=>current&&list.some(st=>st.id===current)?current:(list.find(st=>st.aqi!==null)?.id??list[0].id));
       }catch(err){
-        if(!active)return;
-        setStations([]);setState("offline");setError(err instanceof Error?err.message:"Station feed is unavailable.");
+        if(disposed||requestId!==requestSequence.current||currentController.signal.aborted)return;
+        setStations([]);
+        setState("offline");
+        setError(err instanceof Error?err.message:"Station feed is unavailable.");
+      }finally{
+        if(!disposed&&requestId===requestSequence.current){
+          timer=window.setTimeout(()=>void load(),5*60*1000);
+        }
       }
     };
     void load();
-    const timer=window.setInterval(()=>void load(),5*60*1000);
-    return()=>{active=false;window.clearInterval(timer);};
-  },[apiBase,retry]);
-
-  useEffect(()=>{
-    let cancelled=false;
-    let script:HTMLScriptElement|null=null;
-    if(!mapEl.current||mapRef.current)return;
-    const initMap=()=>{
-      if(cancelled||!mapEl.current||!window.maplibregl)return;
-      const lib=window.maplibregl;
-      const map=new lib.Map({
-        container:mapEl.current,center:CITY_CENTER,zoom:10.5,minZoom:8,maxZoom:17,
-        attributionControl:true,
-        style:{version:8,sources:{osm:{type:"raster",tiles:["https://tile.openstreetmap.org/{z}/{x}/{y}.png"],tileSize:256,attribution:"© OpenStreetMap contributors"}},layers:[{id:"osm-base",type:"raster",source:"osm"}]}
-      });
-      map.addControl(new lib.NavigationControl({showCompass:false}),"top-right");
-      mapRef.current=map;
-      map.on("load",()=>{setMapReady(true);});
+    return()=>{
+      disposed=true;
+      requestSequence.current+=1;
+      controller?.abort();
+      if(timer!==undefined)window.clearTimeout(timer);
     };
-    if(window.maplibregl) initMap();
-    else {
-      script=document.createElement("script");
-      script.src="https://unpkg.com/maplibre-gl@5.24.0/dist/maplibre-gl.js";
-      script.async=true;
-      script.onload=initMap;
-      script.onerror=()=>{if(!cancelled)setError("The map renderer could not be loaded from its CDN.");};
-      const css=document.createElement("link");
-      css.rel="stylesheet";
-      css.href="https://unpkg.com/maplibre-gl@5.24.0/dist/maplibre-gl.css";
-      if(!document.querySelector('link[data-chennai-maplibre="true"]')) {
-        css.dataset.chennaiMaplibre="true";
-        document.head.appendChild(css);
-      }
-      document.head.appendChild(script);
-    }
-    return()=>{cancelled=true;markers.current.forEach(marker=>marker.remove());markers.current=[];mapRef.current?.remove();mapRef.current=null;setMapReady(false);if(script)script.remove();};
-  },[]);
+  },[apiBase,retry]);
 
   const sourceOptions=useMemo(()=>["all",...new Set(stations.map(st=>st.source).filter(Boolean))],[stations]);
   const filtered=useMemo(()=>stations.filter(st=>{
@@ -234,32 +329,20 @@ export default function ChennaiAqiDashboard({ apiBase = "" }: { apiBase?: string
     return sourceMatch&&(!q||st.name.toLowerCase().includes(q)||st.source.toLowerCase().includes(q)||st.id.toLowerCase().includes(q));
   }),[stations,source,query]);
   const ranked=useMemo(()=>[...filtered].filter(st=>valueFor(st,metric)!==null).sort((a,b)=>(valueFor(b,metric)??-Infinity)-(valueFor(a,metric)??-Infinity)),[filtered,metric]);
-  const selectedStation=stations.find(st=>st.id===selected)||null;
+  const selectedStation=filtered.find(st=>st.id===selected)||null;
   const aqiValues=stations.map(st=>st.aqi).filter((v):v is number=>v!==null);
   const cityMedian=median(aqiValues);
   const worst=[...stations].filter(st=>st.aqi!==null).sort((a,b)=>(b.aqi??0)-(a.aqi??0))[0]||null;
   const networkCount=new Set(stations.map(st=>st.source)).size;
   const metricLabel=POLLUTANTS.find(x=>x.id===metric)?.label??"AQI";
+  const latestMeasurement=stations.map(st=>st.updatedAt).filter((value):value is string=>Boolean(value)&&Number.isFinite(Date.parse(value as string))).sort((a,b)=>Date.parse(b)-Date.parse(a))[0]??null;
+  const stationsAbove200=aqiValues.length?aqiValues.filter(value=>value>200).length:null;
 
   useEffect(()=>{
-    const map=mapRef.current;
-    const maplibre=window.maplibregl;
-    if(!map||!mapReady||!maplibre)return;
-    markers.current.forEach(marker=>marker.remove());markers.current=[];
-    for(const station of filtered){
-      if(station.lat===null||station.lon===null)continue;
-      const value=valueFor(station,metric);
-      const element=document.createElement("button");
-      element.type="button";element.className="chennai-map-marker"+(station.id===selected?" selected":"");
-      element.style.setProperty("--marker-color",metric==="aqi"?aqiColor(station.aqi):"#4d91c7");
-      element.textContent=value===null?"·":String(Math.round(value));
-      element.title=station.name+" · "+(value===null?"No "+metricLabel+" reading":metricLabel+" "+value);
-      element.addEventListener("click",event=>{event.preventDefault();event.stopPropagation();setSelected(station.id);});
-      markers.current.push(new maplibre.Marker({element,anchor:"center"}).setLngLat([station.lon,station.lat]).addTo(map));
+    if(selectedStation?.lat!==null&&selectedStation?.lon!==null&&selectedStation?.lat!==undefined&&selectedStation.lon!==undefined){
+      // The tile map receives this selection via its controlled center state.
     }
-    if(selectedStation?.lat!==null&&selectedStation?.lon!==null&&selectedStation?.lat!==undefined&&selectedStation?.lon!==undefined)
-      map.easeTo({center:[selectedStation.lon,selectedStation.lat],duration:400});
-  },[filtered,metric,selected,selectedStation,metricLabel,mapReady]);
+  },[selectedStation]);
 
   return <section className="content chennai-aqi-content">
     <div className="sectionhead chennai-aqi-head">
@@ -267,12 +350,12 @@ export default function ChennaiAqiDashboard({ apiBase = "" }: { apiBase?: string
       <div className="chennai-feed-actions"><span className={"chennai-feed-status "+state}><i/>{state==="online"?"LIVE SOURCE":state==="loading"?"CONNECTING":"SOURCE UNAVAILABLE"}</span><button className="chennai-refresh" onClick={()=>setRetry(v=>v+1)} disabled={state==="loading"}><RefreshCw size={14}/> Refresh</button></div>
     </div>
 
-    <div className="chennai-hero"><PixelCity value={cityMedian===null?"—":String(Math.round(cityMedian))}/><div className="chennai-hero-copy"><div className="chennai-hero-label">MEDIAN STATION AQI · CPCB SCALE</div><div className="chennai-hero-number">{cityMedian===null?"—":Math.round(cityMedian)}</div><span className="chennai-aqi-category" style={{backgroundColor:aqiColor(cityMedian)}}>{aqiCategory(cityMedian)}</span><p>Median of the station AQI readings returned by the public source. This is not a separately calculated regulatory city-wide AQI.</p><small>{stations.length?aqiValues.length+" stations with AQI · "+age(updated):state==="loading"?"Loading public station records…":"No live station readings received"}</small></div></div>
+    <div className="chennai-hero"><PixelCity value={cityMedian===null?"—":String(Math.round(cityMedian))}/><div className="chennai-hero-copy"><div className="chennai-hero-label">MEDIAN STATION AQI · CPCB SCALE</div><div className="chennai-hero-number">{cityMedian===null?"—":Math.round(cityMedian)}</div><span className="chennai-aqi-category" style={{backgroundColor:aqiColor(cityMedian)}}>{aqiCategory(cityMedian)}</span><p>Median of the station AQI readings returned by the public source. This is not a separately calculated regulatory city-wide AQI.</p><small>{stations.length?aqiValues.length+" stations with AQI · latest measurement "+age(latestMeasurement)+" · feed fetched "+age(updated):state==="loading"?"Loading public station records…":"No live station readings received"}</small></div></div>
 
     <div className="chennai-metrics">
       <article><div>STATIONS REPORTING</div><strong>{stations.length||"—"}</strong><small>Records returned by source</small></article>
       <article><div>STATION NETWORKS</div><strong>{networkCount||"—"}</strong><small>Distinct source labels</small></article>
-      <article><div>STATIONS ABOVE 200</div><strong>{stations.length?stations.filter(st=>(st.aqi??0)>200).length:"—"}</strong><small>Poor or worse · station AQI</small></article>
+      <article><div>STATIONS ABOVE 200</div><strong>{stationsAbove200===null?"—":stationsAbove200}</strong><small>Poor or worse · station AQI</small></article>
       <article><div>HIGHEST STATION AQI</div><strong>{worst?.aqi == null ? "—" : Math.round(worst.aqi)}</strong><small>{worst?.name||"No AQI data"}</small></article>
     </div>
 
@@ -281,7 +364,7 @@ export default function ChennaiAqiDashboard({ apiBase = "" }: { apiBase?: string
     <div className="chennai-map-layout">
       <article className="chennai-map-card">
         <div className="chennai-map-toolbar"><div className="chennai-metric-switch" aria-label="Pollutant layer">{POLLUTANTS.map(item=><button key={item.id} className={metric===item.id?"active":""} onClick={()=>setMetric(item.id)}>{item.label}</button>)}</div><label className="chennai-source-filter"><Filter size={14}/><select value={source} onChange={e=>setSource(e.target.value)}><option value="all">All sources</option>{sourceOptions.filter(x=>x!=="all").sort().map(x=><option key={x} value={x}>{x}</option>)}</select></label></div>
-        <div className="chennai-map-wrap"><div className="chennai-map" ref={mapEl}/>{!stations.length?<div className="chennai-map-overlay"><div><MapPin size={20}/><strong>{state==="loading"?"Loading Chennai station map":"Station markers will appear here"}</strong><span>{state==="loading"?"Connecting to the public station feed.":"Map tiles load independently; AQI markers require real station coordinates and readings."}</span></div></div>:null}<div className="chennai-map-legend"><span><i style={{background:"#31a354"}}/> 0–50</span><span><i style={{background:"#a3c920"}}/> 51–100</span><span><i style={{background:"#e8b323"}}/> 101–200</span><span><i style={{background:"#e87926"}}/> 201–300</span><span><i style={{background:"#cb3d3d"}}/> 301+</span></div></div>
+        <div className="chennai-map-wrap"><ChennaiTileMap stations={filtered} metric={metric} selected={selected} metricLabel={metricLabel} onSelect={setSelected}/>{!stations.length?<div className="chennai-map-overlay"><div><MapPin size={20}/><strong>{state==="loading"?"Loading Chennai station map":"Station markers will appear here"}</strong><span>{state==="loading"?"Connecting to the public station feed.":"Map tiles load independently; AQI markers require real station coordinates and readings."}</span></div></div>:null}<div className="chennai-map-legend"><span><i style={{background:"#31a354"}}/> 0–50</span><span><i style={{background:"#a3c920"}}/> 51–100</span><span><i style={{background:"#e8b323"}}/> 101–200</span><span><i style={{background:"#e87926"}}/> 201–300</span><span><i style={{background:"#cb3d3d"}}/> 301–400</span><span><i style={{background:"#8e2c62"}}/> 401+</span></div></div>
         <div className="chennai-map-footer"><span>MAP: © OPENSTREETMAP CONTRIBUTORS · CHENNAI</span><span>{filtered.filter(st=>st.lat!==null&&st.lon!==null).length} MAPPED STATIONS</span></div>
       </article>
       <aside className="chennai-ranking">
