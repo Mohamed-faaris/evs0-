@@ -1,11 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import type { CSSProperties } from "react";
 import { AlertCircle, Clock3, ExternalLink, Filter, MapPin, RefreshCw, Search } from "lucide-react";
 
 type Station = {
-  id: string; name: string; source: string;
+  id: string; name: string; source: string; city: string;
   lat: number | null; lon: number | null; aqi: number | null;
-  updatedAt: string | null; pollutants: Record<string, number>;
+  updatedAt: string | null; scrapedAt: string | null; pollutants: Record<string, number>;
 };
 type FeedState = "loading" | "online" | "offline";
 const CITY_CENTER: [number, number] = [80.2667, 13.0833];
@@ -13,7 +14,9 @@ const POLLUTANTS = [
   { id: "aqi", label: "AQI" }, { id: "pm25", label: "PM2.5" },
   { id: "pm10", label: "PM10" }, { id: "no2", label: "NO₂" },
   { id: "so2", label: "SO₂" }, { id: "o3", label: "O₃" },
-  { id: "co", label: "CO" }, { id: "nh3", label: "NH₃" }, { id: "tvoc", label: "TVOC" }
+  { id: "co", label: "CO" }, { id: "nh3", label: "NH₃" }, { id: "tvoc", label: "TVOC" },
+  { id: "noise", label: "NOISE" }, { id: "temp_c", label: "TEMP" },
+  { id: "wind_kph", label: "WIND" }, { id: "rain_accum_mm", label: "RAIN" }
 ];
 
 function num(value: unknown): number | null {
@@ -43,47 +46,54 @@ function rowsFrom(payload: unknown): unknown[] {
 }
 
 function normalize(payload: unknown): Station[] {
-  const pollutantKeys = POLLUTANTS.filter((item) => item.id !== "aqi").map((item) => item.id);
-  // Upstream aliases for keys the feed publishes under a different name.
-  const pollutantAliases: Record<string, readonly string[]> = { o3: ["o3", "ozone"] };
+  const pollutantSources: Record<string, string[]> = {
+    pm25: ["pm25"],
+    pm10: ["pm10"],
+    no2: ["no2"],
+    so2: ["so2"],
+    o3: ["ozone", "o3"],
+    co: ["co"],
+    nh3: ["nh3"],
+    tvoc: ["tvoc"],
+    noise: ["noise"],
+    temp_c: ["temp_c"],
+    wind_kph: ["wind_kph"],
+    rain_accum_mm: ["rain_accum_mm", "precip_mm"]
+  };
+
   return rowsFrom(payload).flatMap((entry) => {
     if (!entry || typeof entry !== "object") return [];
     const raw = entry as Record<string, unknown>;
-    const geo = raw.geo && typeof raw.geo === "object" ? raw.geo as Record<string, unknown> : {};
-    const coords = Array.isArray(raw.coordinates) ? raw.coordinates : null;
-    const lat = num(raw.lat ?? raw.latitude ?? geo.lat ?? (coords ? coords[1] : null));
-    const lon = num(raw.lon ?? raw.lng ?? raw.longitude ?? geo.lon ?? geo.lng ?? (coords ? coords[0] : null));
-    // aqi_in is the CPCB/India scale this dashboard renders; plain `aqi` from
-    // sources that publish both is the US scale and would skew the CPCB legend.
-    const aqi = num(raw.aqi_in ?? raw.aqi ?? raw.AQI ?? raw.current_aqi ?? raw.index);
-    const values = (raw.pollutants ?? raw.measurements ?? raw.iaqi ?? raw.metrics ?? {}) as Record<string, unknown>;
+    const lat = num(raw.latitude ?? raw.lat);
+    const lon = num(raw.longitude ?? raw.lon ?? raw.lng);
+    // Reclaim Chennai's selected dashboard metric is aqi_in, not the
+    // generic aqi field. Keep aqi as fallback for stations without aqi_in.
+    const aqi = num(raw.aqi_in) ?? num(raw.aqi) ?? num(raw.AQI) ?? num(raw.current_aqi) ?? num(raw.index);
     const pollutants: Record<string, number> = {};
-    for (const key of pollutantKeys) {
-      const candidates = pollutantAliases[key] ?? [key, key.toUpperCase()];
-      let value: number | null = null;
-      for (const candidate of candidates) {
-        value = num(values[candidate] ?? raw[candidate]);
-        if (value !== null) break;
-      }
-      if (value !== null) pollutants[key] = value;
+    for (const [metric, keys] of Object.entries(pollutantSources)) {
+      const value = keys.map((key) => num(raw[key])).find((item) => item !== null) ?? null;
+      if (value !== null) pollutants[metric] = value;
     }
-    const updated = raw.timestamp ?? raw.updated_at ?? raw.station_updated_at ?? raw.last_updated ?? raw.time;
-    const name = String(raw.name ?? raw.station_name ?? raw.location_name ?? raw.location ?? raw.title ?? "Unnamed station");
+    const updated = raw.station_updated_at ?? raw.source_updated_at ?? raw.updated_at ?? raw.timestamp ?? raw.time;
+    const scraped = raw.scraped_at;
+    const name = String(raw.display_name ?? raw.location_name ?? raw.name ?? raw.station_name ?? raw.location ?? raw.title ?? "Unnamed station");
     const source = String(raw.source ?? raw.provider ?? raw.network ?? raw.source_name ?? "Source not reported");
+    const city = String(raw.city ?? "Unknown area");
     const providedId = raw.uid ?? raw.id ?? raw.station_id ?? raw.code;
-    // A deterministic fingerprint keeps selection stable when an upstream omits
-    // station IDs and reorders its response array between refreshes.
     const fallbackId = [name, source, lat ?? "", lon ?? ""].map((part) => encodeURIComponent(String(part))).join("|");
+
     return [{
       id: providedId === undefined || providedId === null || String(providedId).trim() === ""
         ? "derived:" + fallbackId
         : String(providedId),
       name,
       source,
-      lat: lat !== null && lat > 12.5 && lat < 13.8 ? lat : null,
-      lon: lon !== null && lon > 79.5 && lon < 81 ? lon : null,
+      city,
+      lat: lat !== null && lat > 12.3 && lat < 14 && lon !== null && lon > 79.4 && lon < 81.2 ? lat : null,
+      lon: lon !== null && lon > 79.4 && lon < 81.2 && lat !== null && lat > 12.3 && lat < 14 ? lon : null,
       aqi,
       updatedAt: typeof updated === "string" || typeof updated === "number" ? String(updated) : null,
+      scrapedAt: typeof scraped === "string" || typeof scraped === "number" ? String(scraped) : null,
       pollutants
     }];
   });
@@ -270,21 +280,241 @@ function PixelCity({ value }: { value: string }) {
     const canvas = ref.current;
     const ctx = canvas?.getContext("2d");
     if (!canvas || !ctx) return;
-    canvas.width = 480; canvas.height = 220; ctx.imageSmoothingEnabled = false;
-    ctx.fillStyle = "#0b1322"; ctx.fillRect(0,0,480,220);
-    for (let i=0;i<34;i++) {
-      ctx.fillStyle = i%4===0 ? "#e8edf4" : "#657187";
-      ctx.fillRect((i*83+17)%480,(i*37+13)%116,4,4);
-    }
-    const buildings = [[0,150,52,70],[40,122,28,98],[88,142,32,78],[126,111,35,109],[166,158,45,62],[219,135,38,85],[268,96,52,124],[326,119,35,101],[365,150,42,70],[415,126,65,94]];
-    for (const [x,y,w,h] of buildings) {
-      ctx.fillStyle="#171f30";ctx.fillRect(x,y,w,h);
-      ctx.fillStyle="#101828";ctx.fillRect(x+5,y+7,Math.max(0,w-10),Math.max(0,h-7));
-      for(let wx=x+7;wx<x+w-5;wx+=13) for(let wy=y+12;wy<214;wy+=17) if(((wx*3+wy*5)%7)<3){ctx.fillStyle="#f4d56f";ctx.fillRect(wx,wy,4,5);}
-    }
-    ctx.fillStyle="#111a2a";ctx.fillRect(0,194,480,26);
+    const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
+    let visible = true;
+    let startAnimation = () => {};
+    let stopAnimation = () => {};
+    const observer = new IntersectionObserver((entries) => {
+      const nextVisible = entries.some((entry) => entry.isIntersecting);
+      if (visible === nextVisible) return;
+      visible = nextVisible;
+      if (visible) startAnimation();
+      else stopAnimation();
+    });
+    let animationFrame = 0;
+    let lastFrame = 0;
+    canvas.width = 480;
+    canvas.height = 220;
+    ctx.imageSmoothingEnabled = false;
+
+    const buildings = [
+      [0,150,52,70],[40,122,28,98],[88,142,32,78],[126,111,35,109],
+      [166,158,45,62],[219,135,38,85],[268,96,52,124],[326,119,35,101],
+      [365,150,42,70],[415,126,65,94]
+    ];
+    const stars = Array.from({length:38},(_,i)=>({
+      x:(i*83+17)%480,y:(i*37+13)%116,phase:i*0.73,bright:i%4===0
+    }));
+
+    const draw = (time:number) => {
+      ctx.fillStyle="#0b1322";ctx.fillRect(0,0,480,220);
+      // Band-shaded night sky and gently twinkling pixel stars.
+      for(let band=0;band<7;band++){
+        ctx.fillStyle=["#0b1322","#0d1628","#101a2e","#121d32","#162138","#19243a","#1b2940"][band];
+        ctx.fillRect(0,band*17,480,17);
+      }
+      for(const star of stars){
+        const blink=0.2+0.8*Math.abs(Math.sin(time*1.2+star.phase));
+        ctx.globalAlpha=reducedMotion.matches?0.8:blink;
+        ctx.fillStyle=star.bright?"#e8edf4":"#7e8a9e";
+        ctx.fillRect(star.x,star.y,star.bright?4:3,star.bright?4:3);
+      }
+      ctx.globalAlpha=1;
+
+      // Pixel skyline. Window lights switch in stepped groups.
+      for(let b=0;b<buildings.length;b++){
+        const [x,y,w,h]=buildings[b];
+        ctx.fillStyle="#171f30";ctx.fillRect(x,y,w,h);
+        ctx.fillStyle="#101828";ctx.fillRect(x+5,y+7,Math.max(0,w-10),Math.max(0,h-7));
+        for(let wx=x+7;wx<x+w-5;wx+=13){
+          for(let wy=y+12;wy<214;wy+=17){
+            const seed=Math.floor((wx*3+wy*5+b*11)%7);
+            if(seed<3){
+              const on=reducedMotion.matches||Math.sin(time*0.9+wx*0.11+wy*0.07)>-0.55;
+              ctx.fillStyle=on?"#f4d56f":"#6b6044";
+              ctx.fillRect(wx,wy,4,5);
+            }
+          }
+        }
+      }
+
+      // A low pixel scan beam sweeps across the skyline.
+      const beamX=(time*26)%520-20;
+      ctx.fillStyle="rgba(245,207,105,.22)";
+      ctx.fillRect(Math.floor(beamX/4)*4,102,4,116);
+      ctx.fillStyle="#111a2a";ctx.fillRect(0,194,480,26);
+      // Three stepped traffic lights move along the foreground.
+      for(let i=0;i<5;i++){
+        const lightX=(time*18+i*103)%510-15;
+        ctx.fillStyle=i%2?"#d6b05b":"#e3d9b4";
+        ctx.fillRect(Math.floor(lightX/3)*3,204+(i%2)*5,5,3);
+      }
+    };
+
+    const tick=(now:number)=>{
+      if(!visible||document.hidden||reducedMotion.matches){
+        animationFrame=0;
+        return;
+      }
+      if(now-lastFrame>=1000/12){
+        lastFrame=now;
+        draw(now/1000);
+      }
+      animationFrame=window.requestAnimationFrame(tick);
+    };
+    stopAnimation=()=>{
+      if(animationFrame)window.cancelAnimationFrame(animationFrame);
+      animationFrame=0;
+    };
+    startAnimation=()=>{
+      stopAnimation();
+      draw(performance.now()/1000);
+      if(visible&&!document.hidden&&!reducedMotion.matches){
+        lastFrame=0;
+        animationFrame=window.requestAnimationFrame(tick);
+      }
+    };
+    const handleMotionChange=()=>{
+      if(reducedMotion.matches){
+        stopAnimation();
+        draw(0);
+      }else{
+        startAnimation();
+      }
+    };
+    const handleVisibilityChange=()=>{
+      if(document.hidden)stopAnimation();
+      else if(visible&&!reducedMotion.matches)startAnimation();
+    };
+
+    observer.observe(canvas);
+    draw(0);
+    startAnimation();
+    reducedMotion.addEventListener("change",handleMotionChange);
+    document.addEventListener("visibilitychange",handleVisibilityChange);
+    return()=>{
+      stopAnimation();
+      reducedMotion.removeEventListener("change",handleMotionChange);
+      document.removeEventListener("visibilitychange",handleVisibilityChange);
+      observer.disconnect();
+    };
   },[]);
-  return <div className="chennai-pixel-scene"><canvas ref={ref} role="img" aria-label="Pixel art Chennai skyline"/><span>CHENNAI · AIR QUALITY</span><strong>{value}</strong></div>;
+  return <div className="chennai-pixel-scene">
+    <canvas ref={ref} role="img" aria-label="Animated pixel art Chennai skyline"/>
+    <span>CHENNAI · AIR QUALITY</span>
+    <strong>{value}</strong>
+    <small className="chennai-scene-motion-label">PIXEL SCENE · 12 FPS</small>
+  </div>;
+}
+
+type TrendPoint = {
+  t: string;
+  med: number | null;
+  p10?: number | null;
+  p90?: number | null;
+  lo?: number | null;
+  hi?: number | null;
+  n?: number;
+};
+type TrendDataset = {
+  metric: string;
+  unit: string;
+  hours: number;
+  bucket: string;
+  points: TrendPoint[];
+  requestedHours: number;
+};
+
+type SkyCamera = {
+  id: number;
+  camera_id: string;
+  captured_at: string;
+  verdict: string | null;
+  confidence: number | null;
+  rain_truth: string | null;
+  name: string | null;
+  bearing: number | null;
+  image: string;
+};
+type SkyDataset = {
+  cameras: SkyCamera[];
+  end?: string;
+};
+
+function normalizeSkyDataset(payload: unknown): SkyDataset | null {
+  if (!payload || typeof payload !== "object" || !Array.isArray((payload as {cameras?:unknown}).cameras)) {
+    return null;
+  }
+  const source = payload as Record<string, unknown>;
+  const cameras = (source.cameras as unknown[]).flatMap((entry):SkyCamera[] => {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) return [];
+    const raw = entry as Record<string, unknown>;
+    const cameraId = typeof raw.camera_id === "string" ? raw.camera_id.trim() : "";
+    const capturedAt = typeof raw.captured_at === "string" ? raw.captured_at : "";
+    const image = typeof raw.image === "string" && /^\/sky\/\d{1,10}\.jpg$/.test(raw.image) ? raw.image : "";
+    if (!cameraId || !Number.isFinite(Date.parse(capturedAt)) || !image) return [];
+    const finiteNumber = (value: unknown): number | null =>
+      typeof value === "number" && Number.isFinite(value) ? value : null;
+    const textOrNull = (value: unknown): string | null =>
+      typeof value === "string" ? value : null;
+    return [{
+      id: finiteNumber(raw.id) ?? 0,
+      camera_id: cameraId,
+      captured_at: capturedAt,
+      image,
+      name: textOrNull(raw.name),
+      verdict: textOrNull(raw.verdict),
+      rain_truth: textOrNull(raw.rain_truth),
+      confidence: finiteNumber(raw.confidence),
+      bearing: finiteNumber(raw.bearing)
+    }];
+  });
+  return {
+    cameras,
+    end: typeof source.end === "string" && Number.isFinite(Date.parse(source.end)) ? source.end : undefined
+  };
+}
+
+function SkyCameraCard({camera,apiBase}:{camera:SkyCamera;apiBase:string}) {
+  const [imageFailed,setImageFailed]=useState(false);
+  const [retryNonce,setRetryNonce]=useState(0);
+  const [retrying,setRetrying]=useState(false);
+  const imageMatch=camera.image.match(/^\/sky\/(\d{1,10})\.jpg$/);
+  const imageUrl=imageMatch?apiBase+"/api/chennai-aqi/sky/image/"+imageMatch[1]:"";
+
+  useEffect(()=>{
+    setImageFailed(false);
+    setRetryNonce(0);
+    setRetrying(false);
+  },[imageUrl]);
+
+  useEffect(()=>{
+    if(!retrying)return;
+    const timer=window.setTimeout(()=>{
+      setRetryNonce(value=>value+1);
+      setRetrying(false);
+    },1000*(retryNonce+1));
+    return()=>window.clearTimeout(timer);
+  },[retrying,retryNonce]);
+
+  const handleImageError=()=>{
+    if(retryNonce<3)setRetrying(true);
+    else setImageFailed(true);
+  };
+  const imageSrc=retryNonce?imageUrl+"?retry="+retryNonce:imageUrl;
+  const rainLabel=camera.rain_truth&&camera.rain_truth!=="unknown"?camera.rain_truth:camera.verdict||"Unclassified";
+  return <article className="chennai-sky-camera">
+    <div className="chennai-sky-frame">
+      {imageUrl&&!imageFailed&&!retrying?<img src={imageSrc} alt={(camera.name||camera.camera_id)+" source camera frame"} onError={handleImageError}/>:retrying?<div className="chennai-sky-image-missing">RETRYING FRAME…</div>:<div className="chennai-sky-image-missing">CAMERA FRAME UNAVAILABLE</div>}
+      <span className="chennai-sky-rec"><i/> SOURCE FRAME</span>
+      <span className="chennai-sky-camera-id">{(camera.name||camera.camera_id).toUpperCase()}</span>
+    </div>
+    <div className="chennai-sky-camera-meta">
+      <strong>{rainLabel}</strong>
+      <span>{camera.confidence===null||camera.confidence===undefined?"—":Math.round(camera.confidence*100)+"%"}</span>
+    </div>
+    <small>{age(camera.captured_at)} · bearing {camera.bearing??"—"}°</small>
+  </article>;
 }
 
 export default function ChennaiAqiDashboard({ apiBase = "" }: { apiBase?: string }) {
@@ -297,6 +527,15 @@ export default function ChennaiAqiDashboard({ apiBase = "" }: { apiBase?: string
   const [query,setQuery]=useState("");
   const [selected,setSelected]=useState<string|null>(null);
   const [retry,setRetry]=useState(0);
+  const [skyData,setSkyData]=useState<SkyDataset|null>(null);
+  const [skyState,setSkyState]=useState<FeedState>("loading");
+  const [skyError,setSkyError]=useState("");
+  const [skyRetry,setSkyRetry]=useState(0);
+  const [trendHours,setTrendHours]=useState(24);
+  const [trendData,setTrendData]=useState<TrendDataset|null>(null);
+  const [trendState,setTrendState]=useState<FeedState>("loading");
+  const [trendError,setTrendError]=useState("");
+  const [trendUpdated,setTrendUpdated]=useState<string|null>(null);
   const requestSequence=useRef(0);
 
   useEffect(()=>{
@@ -320,7 +559,7 @@ export default function ChennaiAqiDashboard({ apiBase = "" }: { apiBase?: string
           const message=payload&&typeof payload==="object"&&"message" in payload?String((payload as {message:unknown}).message):"Station feed returned HTTP "+response.status;
           throw new Error(message);
         }
-        const list=normalize(payload);
+        const list=normalize(payload).filter(st=>st.aqi!==null||Object.keys(st.pollutants).length>0);
         if(!list.length) throw new Error("The upstream responded, but station records could not be identified. No example readings are substituted.");
         if(disposed||requestId!==requestSequence.current)return;
         setStations(list);
@@ -347,6 +586,93 @@ export default function ChennaiAqiDashboard({ apiBase = "" }: { apiBase?: string
     };
   },[apiBase,retry]);
 
+  useEffect(()=>{
+    let disposed=false;
+    let timer:number|undefined;
+    const controller=new AbortController();
+    const load=async()=>{
+      setSkyState("loading");
+      setSkyError("");
+      try{
+        const response=await fetch(apiBase+"/api/chennai-aqi/sky",{
+          headers:{Accept:"application/json"},cache:"no-store",signal:controller.signal
+        });
+        const payload=await response.json().catch(()=>null);
+        if(!response.ok){
+          const message=payload&&typeof payload==="object"&&"message" in payload
+            ?String((payload as {message:unknown}).message)
+            :"Sky camera feed returned HTTP "+response.status;
+          throw new Error(message);
+        }
+        const normalized=normalizeSkyDataset(payload);
+        if(!normalized)throw new Error("The source returned an unrecognized sky-camera dataset.");
+        if(disposed)return;
+        setSkyData(normalized);
+        setSkyState("online");
+      }catch(err){
+        if(disposed||controller.signal.aborted)return;
+        setSkyData(null);
+        setSkyState("offline");
+        setSkyError(err instanceof Error?err.message:"Sky camera dataset is unavailable.");
+      }finally{
+        if(!disposed)timer=window.setTimeout(()=>void load(),15*60*1000);
+      }
+    };
+    void load();
+    return()=>{
+      disposed=true;
+      controller.abort();
+      if(timer!==undefined)window.clearTimeout(timer);
+    };
+  },[apiBase,retry,skyRetry]);
+
+  useEffect(()=>{
+    let disposed=false;
+    let timer:number|undefined;
+    let controller:AbortController|null=null;
+    const load=async()=>{
+      controller?.abort();
+      const current=new AbortController();
+      controller=current;
+      setTrendState("loading");
+      setTrendError("");
+      try{
+        const params=new URLSearchParams({metric:"aqi_in",hours:String(trendHours),uid:"all"});
+        const response=await fetch(apiBase+"/api/chennai-aqi/trend?"+params.toString(),{
+          headers:{Accept:"application/json"},cache:"no-store",signal:current.signal
+        });
+        const payload=await response.json().catch(()=>null);
+        if(!response.ok){
+          const message=payload&&typeof payload==="object"&&"message" in payload
+            ?String((payload as {message:unknown}).message)
+            :"Trend API returned HTTP "+response.status;
+          throw new Error(message);
+        }
+        if(!payload||typeof payload!=="object"||!Array.isArray((payload as {points?:unknown}).points)){
+          throw new Error("The source returned an invalid AQI trend response.");
+        }
+        if(disposed)return;
+        setTrendData({...(payload as TrendDataset),requestedHours:trendHours});
+        setTrendUpdated(response.headers.get("X-AQI-Updated-At"));
+        setTrendState("online");
+      }catch(err){
+        if(disposed||current.signal.aborted)return;
+        setTrendData(null);
+        setTrendUpdated(null);
+        setTrendState("offline");
+        setTrendError(err instanceof Error?err.message:"AQI history is unavailable.");
+      }finally{
+        if(!disposed)timer=window.setTimeout(()=>void load(),5*60*1000);
+      }
+    };
+    void load();
+    return()=>{
+      disposed=true;
+      controller?.abort();
+      if(timer!==undefined)window.clearTimeout(timer);
+    };
+  },[apiBase,trendHours,retry]);
+
   const sourceOptions=useMemo(()=>["all",...new Set(stations.map(st=>st.source).filter(Boolean))],[stations]);
   const filtered=useMemo(()=>stations.filter(st=>{
     const sourceMatch=source==="all"||st.source===source;
@@ -355,13 +681,30 @@ export default function ChennaiAqiDashboard({ apiBase = "" }: { apiBase?: string
   }),[stations,source,query]);
   const ranked=useMemo(()=>[...filtered].filter(st=>valueFor(st,metric)!==null).sort((a,b)=>(valueFor(b,metric)??-Infinity)-(valueFor(a,metric)??-Infinity)),[filtered,metric]);
   const selectedStation=filtered.find(st=>st.id===selected)||null;
-  const aqiValues=stations.map(st=>st.aqi).filter((v):v is number=>v!==null);
+  const aqiStations=stations.filter(st=>st.aqi!==null);
+  const aqiValues=aqiStations.map(st=>st.aqi as number);
   const cityMedian=median(aqiValues);
-  const worst=[...stations].filter(st=>st.aqi!==null).sort((a,b)=>(b.aqi??0)-(a.aqi??0))[0]||null;
-  const networkCount=new Set(stations.map(st=>st.source)).size;
+  const worst=[...aqiStations].sort((a,b)=>(b.aqi??0)-(a.aqi??0))[0]||null;
+  const networkCount=new Set(aqiStations.map(st=>st.source)).size;
   const metricLabel=POLLUTANTS.find(x=>x.id===metric)?.label??"AQI";
   const latestMeasurement=stations.map(st=>st.updatedAt).filter((value):value is string=>Boolean(value)&&Number.isFinite(Date.parse(value as string))).sort((a,b)=>Date.parse(b)-Date.parse(a))[0]??null;
   const stationsAbove200=aqiValues.length?aqiValues.filter(value=>value>200).length:null;
+  const extraMetrics=[
+    {id:"rain_accum_mm",label:"RAIN ACCUMULATION",unit:"mm"},
+    {id:"noise",label:"NOISE",unit:"dB"},
+    {id:"temp_c",label:"TEMPERATURE",unit:"°C"},
+    {id:"wind_kph",label:"WIND",unit:"km/h"}
+  ].map(item=>{
+    const values=stations.map(st=>st.pollutants[item.id]).filter((value):value is number=>value!==undefined&&Number.isFinite(value));
+    return {...item,value:median(values),count:values.length};
+  });
+  const visibleTrendData=trendData?.requestedHours===trendHours?trendData:null;
+  const trendChartData=(visibleTrendData?.points??[]).filter(point=>point!=null&&point.med!==null&&Number.isFinite(point.med)).map(point=>({
+    time:new Date(point.t).toLocaleString([],trendHours>24
+      ?{month:"short",day:"2-digit",hour:"2-digit",minute:"2-digit"}
+      :{hour:"2-digit",minute:"2-digit"}),
+    median:point.med
+  }));
 
   return <section className="content chennai-aqi-content">
     <div className="sectionhead chennai-aqi-head">
@@ -369,16 +712,39 @@ export default function ChennaiAqiDashboard({ apiBase = "" }: { apiBase?: string
       <div className="chennai-feed-actions"><span className={"chennai-feed-status "+state}><i/>{state==="online"?"LIVE SOURCE":state==="loading"?"CONNECTING":"SOURCE UNAVAILABLE"}</span><button className="chennai-refresh" onClick={()=>setRetry(v=>v+1)} disabled={state==="loading"}><RefreshCw size={14}/> Refresh</button></div>
     </div>
 
-    <div className="chennai-hero"><PixelCity value={cityMedian===null?"—":String(Math.round(cityMedian))}/><div className="chennai-hero-copy"><div className="chennai-hero-label">MEDIAN STATION AQI · CPCB SCALE</div><div className="chennai-hero-number">{cityMedian===null?"—":Math.round(cityMedian)}</div><span className="chennai-aqi-category" style={{backgroundColor:aqiColor(cityMedian)}}>{aqiCategory(cityMedian)}</span><p>Median of the station AQI readings returned by the public source. This is not a separately calculated regulatory city-wide AQI.</p><small>{stations.length?aqiValues.length+" stations with AQI · latest measurement "+age(latestMeasurement)+" · feed fetched "+age(updated):state==="loading"?"Loading public station records…":"No live station readings received"}</small></div></div>
+    <div className="chennai-hero"><PixelCity value={cityMedian===null?"—":String(Math.round(cityMedian))}/><div className="chennai-hero-copy"><div className="chennai-hero-label">MEDIAN STATION AQI · CPCB SCALE</div><div className="chennai-hero-number">{cityMedian===null?"—":Math.round(cityMedian)}</div><span className="chennai-aqi-category" style={{backgroundColor:aqiColor(cityMedian)}}>{aqiCategory(cityMedian)}</span><p>Median of the station AQI readings returned by the public source. This is not a separately calculated regulatory city-wide AQI.</p><small>{aqiStations.length?aqiStations.length+" stations with AQI · latest station update "+age(latestMeasurement):state==="loading"?"Loading public station records…":"No live station readings received"}</small></div></div>
 
     <div className="chennai-metrics">
-      <article><div>STATIONS REPORTING</div><strong>{stations.length||"—"}</strong><small>Records returned by source</small></article>
-      <article><div>STATION NETWORKS</div><strong>{networkCount||"—"}</strong><small>Distinct source labels</small></article>
+      <article><div>STATIONS REPORTING</div><strong>{aqiStations.length||"—"}</strong><small>Stations with aqi_in readings</small></article>
+      <article><div>STATION NETWORKS</div><strong>{networkCount||"—"}</strong><small>Networks with AQI readings</small></article>
       <article><div>STATIONS ABOVE 200</div><strong>{stationsAbove200===null?"—":stationsAbove200}</strong><small>Poor or worse · station AQI</small></article>
       <article><div>HIGHEST STATION AQI</div><strong>{worst?.aqi == null ? "—" : Math.round(worst.aqi)}</strong><small>{worst?.name||"No AQI data"}</small></article>
     </div>
 
+    <div className="chennai-extra-metrics">
+      {extraMetrics.map(item=><article key={item.id}>
+        <div>{item.label}</div>
+        <strong>{item.value===null?"—":item.value.toFixed(1)}<small> {item.unit}</small></strong>
+        <span>{item.count} station reports</span>
+      </article>)}
+    </div>
+
     {state==="offline"?<div className="chennai-feed-error"><AlertCircle size={20}/><div><strong>Live station data is unavailable</strong><p>{error} The reference screenshot and example values are not used as fallback data.</p></div><a href="https://pol.reclaimchennai.city/#m=aqi_in&h=24" target="_blank" rel="noreferrer">Open source dashboard <ExternalLink size={13}/></a></div>:null}
+
+    <section className="chennai-sky-section">
+      <div className="chennai-sky-head">
+        <div><div className="eyebrow">RECLAIM CHENNAI · PUBLIC CAMERA DATASET</div><h3>What the sky looks like</h3><p>Latest published source-camera snapshots and camera-derived rain labels, with capture times.</p></div>
+        <div className="chennai-sky-status-actions"><span className={"chennai-feed-status "+skyState}><i/>{skyState==="online"?"SOURCE CONNECTED":skyState==="loading"?"LOADING FRAMES":"CAMERA FEED UNAVAILABLE"}</span><button className="chennai-refresh" onClick={()=>setSkyRetry(value=>value+1)} disabled={skyState==="loading"}><RefreshCw size={13}/> Refresh frames</button></div>
+      </div>
+      {skyData?.cameras?.length?<div className="chennai-sky-grid">
+        {skyData.cameras.slice(0,4).map(camera=><SkyCameraCard key={camera.camera_id} camera={camera} apiBase={apiBase}/>)}
+      </div>:<div className="chennai-sky-empty">{skyState==="loading"?"Loading source camera frames…":skyError||"No camera records available."}</div>}
+      <div className="chennai-sky-foot">
+        <span>{skyData?.cameras?.length??0} camera streams · Reclaim Chennai public dataset</span>
+        <span>Latest capture: {age(skyData?.end??skyData?.cameras?.map(camera=>camera.captured_at).sort((a,b)=>Date.parse(b)-Date.parse(a))[0]??null)}</span>
+      </div>
+      <small className="chennai-sky-disclaimer">These are source camera snapshots, not a live video stream. Rain labels and confidence values are source annotations, not independent EVS0 measurements.</small>
+    </section>
 
     <div className="chennai-map-layout">
       <article className="chennai-map-card">
@@ -394,7 +760,28 @@ export default function ChennaiAqiDashboard({ apiBase = "" }: { apiBase?: string
       </aside>
     </div>
 
-    <div className="chennai-history-placeholder"><div><Clock3 size={16}/><strong>Historical replay</strong></div><span>6h · 24h · 3d · 7d · 30d · 1y</span><small>Historical controls are not active until a public station-history endpoint is verified. This page uses the latest station snapshot only.</small></div>
-    <div className="chennai-source-note"><div><strong>DATA & ATTRIBUTION</strong><p>Station source endpoint: pol.reclaimchennai.city · Chennai. Dashboard reference: Reclaim Chennai. AQI categories use the CPCB scale. Values are shown as received; missing readings are not interpolated.</p></div><a href="https://pol.reclaimchennai.city/#m=aqi_in&h=24" target="_blank" rel="noreferrer">Visit Reclaim Chennai AQI <ExternalLink size={13}/></a></div>
+    <section className="chennai-history-panel">
+      <div className="chennai-history-head">
+        <div><div className="eyebrow">RECLAIM CHENNAI · /API/TREND</div><h3>Air quality over time</h3><p>Source median AQI (aqi_in) over the selected time range.</p></div>
+        <div className="chennai-history-ranges">
+          {[6,24,72,168].map(hours=><button key={hours} className={trendHours===hours?"active":""} onClick={()=>setTrendHours(hours)}>{hours<24?hours+"h":hours===24?"24h":hours/24+"d"}</button>)}
+        </div>
+      </div>
+      {trendState==="offline"?<div className="chennai-trend-error">{trendError||"AQI history is unavailable."}</div>:null}
+      {trendChartData.length?<div className="chennai-trend-chart">
+        <ResponsiveContainer width="100%" height="100%">
+          <AreaChart data={trendChartData} margin={{top:12,right:14,left:0,bottom:0}}>
+            <defs><linearGradient id="chennaiAqiFill" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor="#d79b17" stopOpacity={0.32}/><stop offset="95%" stopColor="#d79b17" stopOpacity={0.02}/></linearGradient></defs>
+            <CartesianGrid strokeDasharray="3 4" vertical={false} stroke="#e3dfd5"/>
+            <XAxis dataKey="time" tick={{fontSize:10,fill:"#707887"}} minTickGap={34}/>
+            <YAxis tick={{fontSize:10,fill:"#707887"}} width={38}/>
+            <Tooltip formatter={(value)=>[value,"Median AQI"]}/>
+            <Area type="monotone" dataKey="median" stroke="#ac7608" fill="url(#chennaiAqiFill)" strokeWidth={2} connectNulls/>
+          </AreaChart>
+        </ResponsiveContainer>
+      </div>:<div className="chennai-trend-empty">{trendState==="loading"?"Loading AQI history…":"No AQI trend points were returned for this range."}</div>}
+      <div className="chennai-history-foot"><span>{visibleTrendData?.bucket||"—"} buckets · {trendChartData.length} points</span><span>Last source refresh: {age(trendUpdated)}</span></div>
+    </section>
+    <div className="chennai-source-note"><div><strong>DATA & ATTRIBUTION</strong><p>Stations and AQI history: Reclaim Chennai `/api/stations` and `/api/trend`. Camera snapshots: Reclaim Chennai `/api/sky?hours=24`. AQI categories use the CPCB scale. Values are shown as received; missing readings are not interpolated.</p></div><a href="https://pol.reclaimchennai.city/#m=aqi_in&h=24" target="_blank" rel="noreferrer">Visit Reclaim Chennai AQI <ExternalLink size={13}/></a></div>
   </section>;
 }

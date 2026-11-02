@@ -662,41 +662,18 @@ app.get("/api/aqi/predictions", (c) => c.json({
   available: false,
   reason: "No validated prediction model is configured yet. Predictions will be enabled after collecting and validating historical data."
 }));
-app.get("/", (c) => c.json({ name: "EVS0 Dashboard API", docs: ["/api/health", "/api/devices", "/api/chennai-aqi/source", "/api/chennai-aqi/stations", "/api/readings/latest", "/api/readings/history", "/api/power-meter/latest", "/api/power-meter/history", "/api/power-meter/carbon", "/api/power-meter/forecast", "/api/aqi/current", "/api/aqi/predictions", "/api/aqi/response-forecast"] }));
+app.get("/", (c) => c.json({ name: "EVS0 Dashboard API", docs: ["/api/health", "/api/devices", "/api/chennai-aqi/source", "/api/chennai-aqi/stations", "/api/chennai-aqi/sky", "/api/chennai-aqi/trend", "/api/chennai-aqi/sky/image/:id", "/api/readings/latest", "/api/readings/history", "/api/power-meter/latest", "/api/power-meter/history", "/api/power-meter/carbon", "/api/power-meter/forecast", "/api/aqi/current", "/api/aqi/predictions", "/api/aqi/response-forecast"] }));
 
 // Public Reclaim Chennai city-station source. Keep this fixed to the source
 // declared by the AQI dashboard; browser clients call EVS0, not the upstream host.
-// pol.reclaimchennai.city publishes the station snapshot Reclaim Chennai's own
-// AQI dashboard renders (the previous api.airquality.info host no longer resolves).
-const CHENNAI_AQI_SOURCE_URL = (process.env.CHENNAI_AQI_STATIONS_URL ||
-  "https://pol.reclaimchennai.city/api/stations").trim();
-let chennaiAqiSourceUrl: URL | null = null;
-try {
-  const parsed = new URL(CHENNAI_AQI_SOURCE_URL);
-  if (
-    parsed.protocol !== "https:" ||
-    parsed.hostname !== "pol.reclaimchennai.city" ||
-    parsed.port ||
-    parsed.pathname !== "/api/stations" ||
-    parsed.username ||
-    parsed.password ||
-    parsed.search ||
-    parsed.hash
-  ) {
-    throw new Error("CHENNAI_AQI_STATIONS_URL must use the published HTTPS Chennai stations endpoint.");
-  }
-  chennaiAqiSourceUrl = parsed;
-} catch (error) {
-  console.error("[CHENNAI-AQI] Source URL rejected:", error instanceof Error ? error.message : "Invalid URL");
-}
+const chennaiAqiSourceUrl = new URL("https://pol.reclaimchennai.city/api/stations");
+const CHENNAI_AQI_SOURCE_URL = chennaiAqiSourceUrl.toString();
 
-const CHENNAI_AQI_SOURCE_LABEL = "pol.reclaimchennai.city";
 const CHENNAI_CITY_LABEL = "chennai";
 
-// The upstream snapshot covers the wider metro region and ignores a ?city=
-// filter, so scope records to the Chennai label this endpoint promises. Records
-// without a city label pass through untouched, and an unexpected label change
-// never blanks the feed.
+// The published snapshot includes nearby metro records; retain Chennai-tagged
+// records when the source provides city labels. If the source changes schema,
+// pass through the payload rather than silently removing every station.
 function scopeChennaiStations(payload: unknown): unknown {
   if (!payload || typeof payload !== "object" || Array.isArray(payload)) return payload;
   const record = payload as Record<string, unknown>;
@@ -708,13 +685,11 @@ function scopeChennaiStations(payload: unknown): unknown {
   const chennai = tagged.filter(
     (station) => (station as { city: string }).city.trim().toLowerCase() === CHENNAI_CITY_LABEL
   );
-  if (chennai.length === 0) return payload;
-  return { ...record, stations: chennai };
+  return chennai.length > 0 ? { ...record, stations: chennai } : payload;
 }
 
-
 type ChennaiAqiSnapshot = { payload: unknown; fetchedAt: string };
-type ChennaiAqiProxyError = Error & { status?: number; code?: string };
+type ChennaiAqiProxyError = Error & { status?: number; code?: string; upstreamStatus?: number };
 
 let chennaiAqiCache: { expiresAt: number; payload: unknown; fetchedAt: string } | null = null;
 let chennaiAqiRefreshPromise: Promise<ChennaiAqiSnapshot> | null = null;
@@ -726,19 +701,12 @@ function aqiProxyError(message: string, status: number, code: string): ChennaiAq
 }
 
 async function fetchChennaiAqiSnapshot(): Promise<ChennaiAqiSnapshot> {
-  if (!chennaiAqiSourceUrl) {
-    throw aqiProxyError(
-      "The Chennai AQI source URL is invalid. Check CHENNAI_AQI_STATIONS_URL.",
-      503,
-      "chennai_aqi_source_misconfigured"
-    );
-  }
-
   const upstream = await fetch(chennaiAqiSourceUrl, {
     method: "GET",
     headers: {
       Accept: "application/json",
-      "User-Agent": "EVS0-Chennai-AQI-Proxy/1.0"
+      "User-Agent": "EVS0-Chennai-AQI-Proxy/1.0",
+      Referer: "https://pol.reclaimchennai.city/"
     },
     redirect: "error",
     signal: AbortSignal.timeout(12_000)
@@ -747,11 +715,13 @@ async function fetchChennaiAqiSnapshot(): Promise<ChennaiAqiSnapshot> {
   if (!upstream.ok) {
     const status = upstream.status;
     await upstream.body?.cancel().catch(() => {});
-    throw aqiProxyError(
-      "The public Chennai station source returned HTTP " + status + ".",
+    const proxyError = aqiProxyError(
+      "The Reclaim Chennai /api/stations endpoint returned HTTP " + status + ".",
       502,
       "chennai_aqi_upstream_http_error"
     );
+    proxyError.upstreamStatus = status;
+    throw proxyError;
   }
 
   const contentType = upstream.headers.get("content-type") || "";
@@ -822,9 +792,9 @@ async function fetchChennaiAqiSnapshot(): Promise<ChennaiAqiSnapshot> {
     );
   }
 
-  if (!payload || typeof payload !== "object") {
+  if (!payload || typeof payload !== "object" || !Array.isArray((payload as { stations?: unknown }).stations)) {
     throw aqiProxyError(
-      "The public Chennai station source returned an empty or invalid JSON payload.",
+      "The Reclaim Chennai /api/stations response did not contain a stations array.",
       502,
       "chennai_aqi_upstream_invalid_payload"
     );
@@ -833,8 +803,277 @@ async function fetchChennaiAqiSnapshot(): Promise<ChennaiAqiSnapshot> {
   return { payload: scopeChennaiStations(payload), fetchedAt: new Date().toISOString() };
 }
 
+const CHENNAI_SKY_DATASET_URL = "https://pol.reclaimchennai.city/api/sky?hours=24";
+let chennaiSkyCache: { expiresAt: number; payload: unknown; fetchedAt: string } | null = null;
+let chennaiSkyRefresh: Promise<{ payload: unknown; fetchedAt: string }> | null = null;
+const CHENNAI_SKY_CACHE_MS = 5 * 60_000;
+const CHENNAI_SKY_MAX_BYTES = 5 * 1024 * 1024;
+
+async function fetchChennaiSkySnapshot(): Promise<{ payload: unknown; fetchedAt: string }> {
+  const response = await fetch(CHENNAI_SKY_DATASET_URL, {
+    headers: {
+      Accept: "application/json",
+      Referer: "https://pol.reclaimchennai.city/",
+      "User-Agent": "EVS0-Chennai-AQI-Proxy/1.0"
+    },
+    redirect: "error",
+    signal: AbortSignal.timeout(15_000)
+  });
+
+  if (!response.ok) {
+    const status = response.status;
+    await response.body?.cancel().catch(() => {});
+    throw new Error("Reclaim Chennai sky API returned HTTP " + status + ".");
+  }
+
+  const contentType = response.headers.get("content-type") || "";
+  if (!contentType.toLowerCase().includes("json")) {
+    await response.body?.cancel().catch(() => {});
+    throw new Error("Reclaim Chennai sky API returned non-JSON content.");
+  }
+
+  const declaredLength = Number(response.headers.get("content-length"));
+  if (Number.isFinite(declaredLength) && declaredLength > CHENNAI_SKY_MAX_BYTES) {
+    await response.body?.cancel().catch(() => {});
+    throw new Error("Reclaim Chennai sky API exceeded the 5 MiB response limit.");
+  }
+
+  if (!response.body) throw new Error("Reclaim Chennai sky API returned an empty body.");
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let totalBytes = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      totalBytes += value.byteLength;
+      if (totalBytes > CHENNAI_SKY_MAX_BYTES) {
+        await reader.cancel().catch(() => {});
+        throw new Error("Reclaim Chennai sky API exceeded the 5 MiB response limit.");
+      }
+      chunks.push(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+
+  const bytes = new Uint8Array(totalBytes);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+
+  let payload: unknown;
+  try {
+    payload = JSON.parse(new TextDecoder().decode(bytes));
+  } catch {
+    throw new Error("Reclaim Chennai sky API returned malformed JSON.");
+  }
+
+  if (!payload || typeof payload !== "object" || !Array.isArray((payload as { cameras?: unknown }).cameras)) {
+    throw new Error("Reclaim Chennai sky API payload does not contain a cameras array.");
+  }
+
+  const source = payload as Record<string, unknown>;
+  const cameras = source.cameras.flatMap((entry): Record<string, unknown>[] => {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) return [];
+    const camera = entry as Record<string, unknown>;
+    const cameraId = typeof camera.camera_id === "string" ? camera.camera_id.trim() : "";
+    const capturedAt = typeof camera.captured_at === "string" ? camera.captured_at : "";
+    const image = typeof camera.image === "string" && /^\/sky\/\d{1,10}\.jpg$/.test(camera.image)
+      ? camera.image
+      : "";
+    if (!cameraId || !Number.isFinite(Date.parse(capturedAt)) || !image) return [];
+
+    const finiteNumber = (value: unknown): number | null =>
+      typeof value === "number" && Number.isFinite(value) ? value : null;
+    const textOrNull = (value: unknown): string | null =>
+      typeof value === "string" ? value : null;
+
+    return [{
+      id: finiteNumber(camera.id) ?? 0,
+      camera_id: cameraId,
+      captured_at: capturedAt,
+      image,
+      name: textOrNull(camera.name),
+      verdict: textOrNull(camera.verdict),
+      rain_truth: textOrNull(camera.rain_truth),
+      confidence: finiteNumber(camera.confidence),
+      bearing: finiteNumber(camera.bearing)
+    }];
+  });
+
+  return {
+    payload: {
+      ...source,
+      cameras,
+      end: typeof source.end === "string" && Number.isFinite(Date.parse(source.end)) ? source.end : null
+    },
+    fetchedAt: new Date().toISOString()
+  };
+}
+
+type SkyImageProxyError = Error & { status?: number; upstreamStatus?: number };
+const skyImageCache = new Map<string, { bytes: Uint8Array; expiresAt: number }>();
+const skyImageInflight = new Map<string, Promise<Uint8Array>>();
+const SKY_IMAGE_CACHE_MS = 15 * 60_000;
+const SKY_IMAGE_CACHE_MAX_ENTRIES = 48;
+const SKY_IMAGE_MAX_BYTES = 2 * 1024 * 1024;
+const SKY_IMAGE_MAX_CONCURRENT_UPSTREAM = 6;
+let skyImageActiveUpstream = 0;
+
+async function getChennaiSkyImage(id: string): Promise<Uint8Array> {
+  const cached = skyImageCache.get(id);
+  if (cached && cached.expiresAt > Date.now()) return cached.bytes;
+  if (cached) skyImageCache.delete(id);
+
+  const pending = skyImageInflight.get(id);
+  if (pending) return pending;
+
+  if (skyImageActiveUpstream >= SKY_IMAGE_MAX_CONCURRENT_UPSTREAM) {
+    throw Object.assign(new Error("The sky image proxy is busy. Retry shortly."), { status: 429 });
+  }
+
+  skyImageActiveUpstream += 1;
+  const request = (async () => {
+    const upstream = await fetch("https://pol.reclaimchennai.city/sky/" + id + ".jpg", {
+      headers: {
+        Accept: "image/jpeg",
+        Referer: "https://pol.reclaimchennai.city/",
+        "User-Agent": "EVS0-Chennai-AQI-Proxy/1.0"
+      },
+      redirect: "error",
+      signal: AbortSignal.timeout(10_000)
+    });
+
+    const contentType = upstream.headers.get("content-type") || "";
+    if (!upstream.ok || !contentType.toLowerCase().startsWith("image/jpeg") || !upstream.body) {
+      const status = upstream.status;
+      await upstream.body?.cancel().catch(() => {});
+      throw Object.assign(new Error("The source camera frame returned HTTP " + status + " or an unexpected content type."), {
+        status: 502,
+        upstreamStatus: status
+      });
+    }
+
+    const declaredLength = Number(upstream.headers.get("content-length"));
+    if (Number.isFinite(declaredLength) && declaredLength > SKY_IMAGE_MAX_BYTES) {
+      await upstream.body.cancel().catch(() => {});
+      throw Object.assign(new Error("The source camera frame exceeded 2 MiB."), { status: 502 });
+    }
+
+    const reader = upstream.body.getReader();
+    const chunks: Uint8Array[] = [];
+    let totalBytes = 0;
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        totalBytes += value.byteLength;
+        if (totalBytes > SKY_IMAGE_MAX_BYTES) {
+          await reader.cancel().catch(() => {});
+          throw Object.assign(new Error("The source camera frame exceeded 2 MiB."), { status: 502 });
+        }
+        chunks.push(value);
+      }
+    } finally {
+      reader.releaseLock();
+    }
+
+    const bytes = new Uint8Array(totalBytes);
+    let offset = 0;
+    for (const chunk of chunks) {
+      bytes.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
+
+    skyImageCache.set(id, { bytes, expiresAt: Date.now() + SKY_IMAGE_CACHE_MS });
+    while (skyImageCache.size > SKY_IMAGE_CACHE_MAX_ENTRIES) {
+      const oldest = skyImageCache.keys().next().value;
+      if (oldest === undefined) break;
+      skyImageCache.delete(oldest);
+    }
+    return bytes;
+  })().finally(() => {
+    skyImageActiveUpstream = Math.max(0, skyImageActiveUpstream - 1);
+    skyImageInflight.delete(id);
+  });
+
+  skyImageInflight.set(id, request);
+  return request;
+}
+
+app.get("/api/chennai-aqi/sky/image/:id", async (c) => {
+  const id = c.req.param("id");
+  if (!/^\d{1,10}$/.test(id)) {
+    return c.json({ error: "invalid_sky_image_id", message: "Image ID must contain 1–10 digits." }, 400);
+  }
+
+  try {
+    const bytes = await getChennaiSkyImage(id);
+    return new Response(bytes, {
+      status: 200,
+      headers: {
+        "Content-Type": "image/jpeg",
+        "Content-Length": String(bytes.byteLength),
+        "Cache-Control": "public, max-age=900, stale-while-revalidate=3600",
+        "X-Content-Type-Options": "nosniff"
+      }
+    });
+  } catch (error) {
+    const proxyError = error as SkyImageProxyError;
+    const status = proxyError.status === 429 ? 429 : 502;
+    return c.json({
+      error: status === 429 ? "sky_image_proxy_busy" : "sky_image_upstream_unavailable",
+      message: error instanceof Error ? error.message : "The source camera frame could not be fetched.",
+      upstream_status: proxyError.upstreamStatus ?? null
+    }, status);
+  }
+});
+
+app.get("/api/chennai-aqi/sky", async (c) => {
+  if (chennaiSkyCache && chennaiSkyCache.expiresAt > Date.now()) {
+    c.header("X-AQI-Sky-Cache", "HIT");
+    c.header("X-AQI-Sky-Fetched-At", chennaiSkyCache.fetchedAt);
+    return c.json(chennaiSkyCache.payload, 200, { "Cache-Control": "public, max-age=60" });
+  }
+
+  let request = chennaiSkyRefresh;
+  if (!request) {
+    request = fetchChennaiSkySnapshot();
+    chennaiSkyRefresh = request;
+  }
+
+  try {
+    const snapshot = await request;
+    if (chennaiSkyRefresh === request) {
+      chennaiSkyCache = {
+        payload: snapshot.payload,
+        fetchedAt: snapshot.fetchedAt,
+        expiresAt: Date.now() + CHENNAI_SKY_CACHE_MS
+      };
+    }
+    c.header("X-AQI-Sky-Cache", "MISS");
+    c.header("X-AQI-Sky-Fetched-At", snapshot.fetchedAt);
+    return c.json(snapshot.payload, 200, { "Cache-Control": "public, max-age=60" });
+  } catch (error) {
+    console.warn("[CHENNAI-AQI] Sky dataset unavailable:", error instanceof Error ? error.message : "Unknown error");
+    return c.json({
+      error: "chennai_sky_dataset_unavailable",
+      message: "The public Reclaim Chennai sky-camera dataset could not be retrieved.",
+      detail: error instanceof Error ? error.message : "Unknown upstream error"
+    }, 502);
+  } finally {
+    if (chennaiSkyRefresh === request) chennaiSkyRefresh = null;
+  }
+});
+
 app.get("/api/chennai-aqi/source", (c) => c.json({
-  source: "Reclaim Chennai / " + CHENNAI_AQI_SOURCE_LABEL,
+  source: "Reclaim Chennai",
+  station_feed_configured: true,
+  station_endpoint: "https://pol.reclaimchennai.city/api/stations",
+  sky_endpoint: "https://pol.reclaimchennai.city/api/sky?hours=24",
   endpoint: CHENNAI_AQI_SOURCE_URL,
   map_center: [13.0833, 80.2667],
   map_zoom: 11,
@@ -844,15 +1083,8 @@ app.get("/api/chennai-aqi/source", (c) => c.json({
 }));
 
 app.get("/api/chennai-aqi/stations", async (c) => {
-  if (!chennaiAqiSourceUrl) {
-    return c.json({
-      error: "chennai_aqi_source_misconfigured",
-      message: "The Chennai AQI source URL is invalid. Check CHENNAI_AQI_STATIONS_URL."
-    }, 503);
-  }
-
   if (chennaiAqiCache && chennaiAqiCache.expiresAt > Date.now()) {
-    c.header("X-AQI-Source", CHENNAI_AQI_SOURCE_LABEL);
+    c.header("X-AQI-Source", "Reclaim Chennai");
     c.header("X-AQI-Cache", "HIT");
     c.header("X-AQI-Updated-At", chennaiAqiCache.fetchedAt);
     return c.json(chennaiAqiCache.payload, 200, { "Cache-Control": "public, max-age=30" });
@@ -876,7 +1108,7 @@ app.get("/api/chennai-aqi/stations", async (c) => {
       };
     }
 
-    c.header("X-AQI-Source", CHENNAI_AQI_SOURCE_LABEL);
+    c.header("X-AQI-Source", "Reclaim Chennai");
     c.header("X-AQI-Cache", "MISS");
     c.header("X-AQI-Updated-At", snapshot.fetchedAt);
     return c.json(snapshot.payload, 200, { "Cache-Control": "public, max-age=30" });
@@ -886,19 +1118,179 @@ app.get("/api/chennai-aqi/stations", async (c) => {
     const code = proxyError.code || "chennai_aqi_upstream_unavailable";
     const message = proxyError.status
       ? proxyError.message
-      : "The public Chennai station feed is unavailable. No sample AQI values are substituted.";
+      : "The Reclaim Chennai /api/stations feed is unavailable. No sample AQI values are substituted.";
     if (!proxyError.status) {
       console.warn("[CHENNAI-AQI] Upstream unavailable:", error instanceof Error ? error.message : "Unknown error");
     }
     return c.json({
       error: code,
       message,
+      upstream_status: proxyError.upstreamStatus ?? null,
       detail: proxyError.status ? undefined : error instanceof Error ? error.message : "Unknown upstream network error"
-    }, status as 502 | 503);
+    }, status as 424 | 502 | 503);
   } finally {
     if (chennaiAqiRefreshPromise === refreshPromise) {
       chennaiAqiRefreshPromise = null;
     }
+  }
+});
+
+const CHENNAI_TREND_METRICS = new Set([
+  "aqi_in", "aqi", "pm25", "pm10", "no2", "so2", "ozone", "co", "nh3",
+  "noise", "temp_c", "wind_kph", "precip_mm", "rain_accum_mm"
+]);
+const chennaiTrendCache = new Map<string, { expiresAt: number; payload: unknown; fetchedAt: string }>();
+const chennaiTrendInflight = new Map<string, Promise<{ payload: unknown; fetchedAt: string }>>();
+const CHENNAI_TREND_CACHE_MAX_ENTRIES = 256;
+const CHENNAI_TREND_MAX_BYTES = 5 * 1024 * 1024;
+const CHENNAI_TREND_MAX_CONCURRENT_UPSTREAM = 6;
+let chennaiTrendActiveUpstream = 0;
+
+async function readChennaiTrendJson(response: Response): Promise<unknown> {
+  const declaredLength = Number(response.headers.get("content-length"));
+  if (Number.isFinite(declaredLength) && declaredLength > CHENNAI_TREND_MAX_BYTES) {
+    await response.body?.cancel().catch(() => {});
+    throw new Error("Reclaim Chennai trend API exceeded the 5 MiB response limit.");
+  }
+  if (!response.body) throw new Error("Reclaim Chennai trend API returned an empty body.");
+
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let totalBytes = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      totalBytes += value.byteLength;
+      if (totalBytes > CHENNAI_TREND_MAX_BYTES) {
+        await reader.cancel().catch(() => {});
+        throw new Error("Reclaim Chennai trend API exceeded the 5 MiB response limit.");
+      }
+      chunks.push(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+
+  const bytes = new Uint8Array(totalBytes);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  try {
+    return JSON.parse(new TextDecoder().decode(bytes));
+  } catch {
+    throw new Error("Reclaim Chennai trend API returned malformed JSON.");
+  }
+}
+
+app.get("/api/chennai-aqi/trend", async (c) => {
+  const metric = c.req.query("metric") || "aqi_in";
+  const hours = Number(c.req.query("hours") || 24);
+  const uid = c.req.query("uid") || "all";
+  if (!CHENNAI_TREND_METRICS.has(metric)) {
+    return c.json({ error: "invalid_metric", message: "Unsupported AQI trend metric." }, 400);
+  }
+  if (!Number.isInteger(hours) || hours < 1 || hours > 720) {
+    return c.json({ error: "invalid_hours", message: "Trend hours must be an integer from 1 to 720." }, 400);
+  }
+  if (uid !== "all" && !/^[A-Za-z0-9_-]{1,64}$/.test(uid)) {
+    return c.json({ error: "invalid_station_id", message: "Station ID contains unsupported characters." }, 400);
+  }
+
+  const cacheKey = metric + ":" + hours + ":" + uid;
+  for (const [key, entry] of chennaiTrendCache) {
+    if (entry.expiresAt <= Date.now()) chennaiTrendCache.delete(key);
+  }
+  const cached = chennaiTrendCache.get(cacheKey);
+  if (cached && cached.expiresAt > Date.now()) {
+    c.header("X-AQI-Cache", "HIT");
+    c.header("X-AQI-Updated-At", cached.fetchedAt);
+    return c.json(cached.payload, 200, { "Cache-Control": "public, max-age=30" });
+  }
+
+  let request = chennaiTrendInflight.get(cacheKey);
+  if (!request) {
+    if (chennaiTrendActiveUpstream >= CHENNAI_TREND_MAX_CONCURRENT_UPSTREAM) {
+      return c.json({
+        error: "chennai_aqi_trend_busy",
+        message: "The trend proxy is busy. Retry shortly."
+      }, 429);
+    }
+    chennaiTrendActiveUpstream += 1;
+    request = (async () => {
+      const url = new URL("https://pol.reclaimchennai.city/api/trend");
+      url.searchParams.set("metric", metric);
+      url.searchParams.set("hours", String(hours));
+      url.searchParams.set("uid", uid);
+      const upstream = await fetch(url, {
+        headers: {
+          Accept: "application/json",
+          Referer: "https://pol.reclaimchennai.city/",
+          "User-Agent": "EVS0-Chennai-AQI-Proxy/1.0"
+        },
+        redirect: "error",
+        signal: AbortSignal.timeout(12_000)
+      });
+      if (!upstream.ok) {
+        const status = upstream.status;
+        await upstream.body?.cancel().catch(() => {});
+        throw new Error("Reclaim Chennai trend API returned HTTP " + status + ".");
+      }
+      const contentType = upstream.headers.get("content-type") || "";
+      if (!contentType.toLowerCase().includes("json")) {
+        await upstream.body?.cancel().catch(() => {});
+        throw new Error("Reclaim Chennai trend API returned non-JSON content.");
+      }
+      const payload: unknown = await readChennaiTrendJson(upstream);
+      if (!payload || typeof payload !== "object" || !Array.isArray((payload as { points?: unknown }).points)) {
+        throw new Error("Reclaim Chennai trend API returned an invalid points payload.");
+      }
+      const source = payload as Record<string, unknown>;
+      const points = (source.points as unknown[]).filter((point) =>
+        point !== null &&
+        typeof point === "object" &&
+        typeof (point as { t?: unknown }).t === "string" &&
+        Number.isFinite(Date.parse((point as { t: string }).t)) &&
+        ((point as { med?: unknown }).med === null ||
+          (typeof (point as { med?: unknown }).med === "number" && Number.isFinite((point as { med: number }).med)))
+      );
+      return {
+        payload: { ...source, points },
+        fetchedAt: new Date().toISOString()
+      };
+    })().finally(() => {
+      chennaiTrendActiveUpstream = Math.max(0, chennaiTrendActiveUpstream - 1);
+    });
+    chennaiTrendInflight.set(cacheKey, request);
+  }
+
+  try {
+    const snapshot = await request;
+    if (chennaiTrendInflight.get(cacheKey) === request) {
+      chennaiTrendCache.set(cacheKey, {
+        payload: snapshot.payload,
+        fetchedAt: snapshot.fetchedAt,
+        expiresAt: Date.now() + 60_000
+      });
+      while (chennaiTrendCache.size > CHENNAI_TREND_CACHE_MAX_ENTRIES) {
+        const oldest = chennaiTrendCache.keys().next().value;
+        if (oldest === undefined) break;
+        chennaiTrendCache.delete(oldest);
+      }
+    }
+    c.header("X-AQI-Cache", "MISS");
+    c.header("X-AQI-Updated-At", snapshot.fetchedAt);
+    return c.json(snapshot.payload, 200, { "Cache-Control": "public, max-age=30" });
+  } catch (error) {
+    console.warn("[CHENNAI-AQI] Trend API unavailable:", error instanceof Error ? error.message : "Unknown error");
+    return c.json({
+      error: "chennai_aqi_trend_unavailable",
+      message: error instanceof Error ? error.message : "Trend history is unavailable."
+    }, 502);
+  } finally {
+    if (chennaiTrendInflight.get(cacheKey) === request) chennaiTrendInflight.delete(cacheKey);
   }
 });
 
