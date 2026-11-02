@@ -163,7 +163,7 @@ export default function ChennaiAqiDashboard({ apiBase = "" }: { apiBase?: string
   const [retry,setRetry]=useState(0);
   const mapEl=useRef<HTMLDivElement|null>(null);
   const mapRef=useRef<MapLibreMap|null>(null);
-  const mapReady=useRef(false);
+  const [mapReady,setMapReady]=useState(false);
   const markers=useRef<MapLibreMarker[]>([]);
 
   useEffect(()=>{
@@ -206,7 +206,7 @@ export default function ChennaiAqiDashboard({ apiBase = "" }: { apiBase?: string
       });
       map.addControl(new lib.NavigationControl({showCompass:false}),"top-right");
       mapRef.current=map;
-      map.on("load",()=>{mapReady.current=true;});
+      map.on("load",()=>{setMapReady(true);});
     };
     if(window.maplibregl) initMap();
     else {
@@ -224,7 +224,7 @@ export default function ChennaiAqiDashboard({ apiBase = "" }: { apiBase?: string
       }
       document.head.appendChild(script);
     }
-    return()=>{cancelled=true;markers.current.forEach(marker=>marker.remove());markers.current=[];mapRef.current?.remove();mapRef.current=null;mapReady.current=false;if(script)script.remove();};
+    return()=>{cancelled=true;markers.current.forEach(marker=>marker.remove());markers.current=[];mapRef.current?.remove();mapRef.current=null;setMapReady(false);if(script)script.remove();};
   },[]);
 
   const sourceOptions=useMemo(()=>["all",...new Set(stations.map(st=>st.source).filter(Boolean))],[stations]);
@@ -242,7 +242,7 @@ export default function ChennaiAqiDashboard({ apiBase = "" }: { apiBase?: string
   const metricLabel=POLLUTANTS.find(x=>x.id===metric)?.label??"AQI";
 
   useEffect(()=>{
-    const map=mapRef.current;if(!map||!mapReady.current)return;
+    const map=mapRef.current;if(!map||!mapReady)return;
     markers.current.forEach(marker=>marker.remove());markers.current=[];
     for(const station of filtered){
       if(station.lat===null||station.lon===null)continue;
@@ -257,7 +257,7 @@ export default function ChennaiAqiDashboard({ apiBase = "" }: { apiBase?: string
     }
     if(selectedStation?.lat!==null&&selectedStation?.lon!==null&&selectedStation?.lat!==undefined&&selectedStation?.lon!==undefined)
       map.easeTo({center:[selectedStation.lon,selectedStation.lat],duration:400});
-  },[filtered,metric,selected,selectedStation,metricLabel]);
+  },[filtered,metric,selected,selectedStation,metricLabel,mapReady]);
 
   return <section className="content chennai-aqi-content">
     <div className="sectionhead chennai-aqi-head">
@@ -271,7 +271,7 @@ export default function ChennaiAqiDashboard({ apiBase = "" }: { apiBase?: string
       <article><div>STATIONS REPORTING</div><strong>{stations.length||"—"}</strong><small>Records returned by source</small></article>
       <article><div>STATION NETWORKS</div><strong>{networkCount||"—"}</strong><small>Distinct source labels</small></article>
       <article><div>STATIONS ABOVE 200</div><strong>{stations.length?stations.filter(st=>(st.aqi??0)>200).length:"—"}</strong><small>Poor or worse · station AQI</small></article>
-      <article><div>HIGHEST STATION AQI</div><strong>{worst?.aqi===null||!worst?"—":Math.round(worst.aqi)}</strong><small>{worst?.name||"No AQI data"}</small></article>
+      <article><div>HIGHEST STATION AQI</div><strong>{worst?.aqi == null ? "—" : Math.round(worst.aqi)}</strong><small>{worst?.name||"No AQI data"}</small></article>
     </div>
 
     {state==="offline"?<div className="chennai-feed-error"><AlertCircle size={20}/><div><strong>Live station data is unavailable</strong><p>{error} The reference screenshot and example values are not used as fallback data.</p></div><a href="https://pol.reclaimchennai.city/#m=aqi_in&h=24" target="_blank" rel="noreferrer">Open source dashboard <ExternalLink size={13}/></a></div>:null}
