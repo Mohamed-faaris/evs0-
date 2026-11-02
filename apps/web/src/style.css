@@ -216,3 +216,6 @@
 .chennai-history-foot{display:flex;justify-content:space-between;gap:12px;margin-top:9px;color:#777f8b;font-size:9px}
 @media(max-width:760px){.chennai-extra-metrics{grid-template-columns:repeat(2,minmax(0,1fr))}.chennai-history-ranges{width:100%;justify-content:space-between}.chennai-trend-chart{height:210px}}
 @media(max-width:520px){.chennai-extra-metrics article strong{font-size:21px}.chennai-history-head{flex-direction:column}.chennai-history-ranges button{flex:1}.chennai-history-foot{flex-direction:column}}
+
+
+.chennai-sky-status-actions{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
