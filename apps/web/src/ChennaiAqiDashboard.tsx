@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import type { CSSProperties } from "react";
 import { AlertCircle, Clock3, ExternalLink, Filter, MapPin, RefreshCw, Search } from "lucide-react";
 
@@ -366,6 +367,23 @@ function PixelCity({ value }: { value: string }) {
   </div>;
 }
 
+type TrendPoint = {
+  t: string;
+  med: number | null;
+  p10?: number | null;
+  p90?: number | null;
+  lo?: number | null;
+  hi?: number | null;
+  n?: number;
+};
+type TrendDataset = {
+  metric: string;
+  unit: string;
+  hours: number;
+  bucket: string;
+  points: TrendPoint[];
+};
+
 type SkyCamera = {
   id: number;
   camera_id: string;
@@ -418,6 +436,10 @@ export default function ChennaiAqiDashboard({ apiBase = "" }: { apiBase?: string
   const [skyData,setSkyData]=useState<SkyDataset|null>(null);
   const [skyState,setSkyState]=useState<FeedState>("loading");
   const [skyError,setSkyError]=useState("");
+  const [trendHours,setTrendHours]=useState(24);
+  const [trendData,setTrendData]=useState<TrendDataset|null>(null);
+  const [trendState,setTrendState]=useState<FeedState>("loading");
+  const [trendError,setTrendError]=useState("");
   const requestSequence=useRef(0);
 
   useEffect(()=>{
@@ -509,6 +531,51 @@ export default function ChennaiAqiDashboard({ apiBase = "" }: { apiBase?: string
     };
   },[apiBase,retry]);
 
+  useEffect(()=>{
+    let disposed=false;
+    let timer:number|undefined;
+    let controller:AbortController|null=null;
+    const load=async()=>{
+      controller?.abort();
+      const current=new AbortController();
+      controller=current;
+      setTrendState("loading");
+      setTrendError("");
+      try{
+        const params=new URLSearchParams({metric:"aqi_in",hours:String(trendHours),uid:"all"});
+        const response=await fetch(apiBase+"/api/chennai-aqi/trend?"+params.toString(),{
+          headers:{Accept:"application/json"},cache:"no-store",signal:current.signal
+        });
+        const payload=await response.json().catch(()=>null);
+        if(!response.ok){
+          const message=payload&&typeof payload==="object"&&"message" in payload
+            ?String((payload as {message:unknown}).message)
+            :"Trend API returned HTTP "+response.status;
+          throw new Error(message);
+        }
+        if(!payload||typeof payload!=="object"||!Array.isArray((payload as {points?:unknown}).points)){
+          throw new Error("The source returned an invalid AQI trend response.");
+        }
+        if(disposed)return;
+        setTrendData(payload as TrendDataset);
+        setTrendState("online");
+      }catch(err){
+        if(disposed||current.signal.aborted)return;
+        setTrendData(null);
+        setTrendState("offline");
+        setTrendError(err instanceof Error?err.message:"AQI history is unavailable.");
+      }finally{
+        if(!disposed)timer=window.setTimeout(()=>void load(),5*60*1000);
+      }
+    };
+    void load();
+    return()=>{
+      disposed=true;
+      controller?.abort();
+      if(timer!==undefined)window.clearTimeout(timer);
+    };
+  },[apiBase,trendHours,retry]);
+
   const sourceOptions=useMemo(()=>["all",...new Set(stations.map(st=>st.source).filter(Boolean))],[stations]);
   const filtered=useMemo(()=>stations.filter(st=>{
     const sourceMatch=source==="all"||st.source===source;
@@ -517,13 +584,30 @@ export default function ChennaiAqiDashboard({ apiBase = "" }: { apiBase?: string
   }),[stations,source,query]);
   const ranked=useMemo(()=>[...filtered].filter(st=>valueFor(st,metric)!==null).sort((a,b)=>(valueFor(b,metric)??-Infinity)-(valueFor(a,metric)??-Infinity)),[filtered,metric]);
   const selectedStation=filtered.find(st=>st.id===selected)||null;
-  const aqiValues=stations.map(st=>st.aqi).filter((v):v is number=>v!==null);
+  const aqiStations=stations.filter(st=>st.aqi!==null);
+  const aqiValues=aqiStations.map(st=>st.aqi as number);
   const cityMedian=median(aqiValues);
-  const worst=[...stations].filter(st=>st.aqi!==null).sort((a,b)=>(b.aqi??0)-(a.aqi??0))[0]||null;
-  const networkCount=new Set(stations.map(st=>st.source)).size;
+  const worst=[...aqiStations].sort((a,b)=>(b.aqi??0)-(a.aqi??0))[0]||null;
+  const networkCount=new Set(aqiStations.map(st=>st.source)).size;
   const metricLabel=POLLUTANTS.find(x=>x.id===metric)?.label??"AQI";
   const latestMeasurement=stations.map(st=>st.updatedAt).filter((value):value is string=>Boolean(value)&&Number.isFinite(Date.parse(value as string))).sort((a,b)=>Date.parse(b)-Date.parse(a))[0]??null;
   const stationsAbove200=aqiValues.length?aqiValues.filter(value=>value>200).length:null;
+  const extraMetrics=[
+    {id:"rain_accum_mm",label:"RAIN ACCUMULATION",unit:"mm"},
+    {id:"noise",label:"NOISE",unit:"dB"},
+    {id:"temp_c",label:"TEMPERATURE",unit:"°C"},
+    {id:"wind_kph",label:"WIND",unit:"km/h"}
+  ].map(item=>{
+    const values=stations.map(st=>st.pollutants[item.id]).filter((value):value is number=>value!==undefined&&Number.isFinite(value));
+    return {...item,value:median(values),count:values.length};
+  });
+  const trendChartData=(trendData?.points??[]).filter(point=>point.med!==null&&Number.isFinite(point.med)).map(point=>({
+    time:new Date(point.t).toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"}),
+    median:point.med,
+    low:point.p10??null,
+    high:point.p90??null,
+    stations:point.n??0
+  }));
 
   return <section className="content chennai-aqi-content">
     <div className="sectionhead chennai-aqi-head">
@@ -531,13 +615,21 @@ export default function ChennaiAqiDashboard({ apiBase = "" }: { apiBase?: string
       <div className="chennai-feed-actions"><span className={"chennai-feed-status "+state}><i/>{state==="online"?"LIVE SOURCE":state==="loading"?"CONNECTING":"SOURCE UNAVAILABLE"}</span><button className="chennai-refresh" onClick={()=>setRetry(v=>v+1)} disabled={state==="loading"}><RefreshCw size={14}/> Refresh</button></div>
     </div>
 
-    <div className="chennai-hero"><PixelCity value={cityMedian===null?"—":String(Math.round(cityMedian))}/><div className="chennai-hero-copy"><div className="chennai-hero-label">MEDIAN STATION AQI · CPCB SCALE</div><div className="chennai-hero-number">{cityMedian===null?"—":Math.round(cityMedian)}</div><span className="chennai-aqi-category" style={{backgroundColor:aqiColor(cityMedian)}}>{aqiCategory(cityMedian)}</span><p>Median of the station AQI readings returned by the public source. This is not a separately calculated regulatory city-wide AQI.</p><small>{stations.length?aqiValues.length+" stations with AQI · latest measurement "+age(latestMeasurement)+" · feed fetched "+age(updated):state==="loading"?"Loading public station records…":"No live station readings received"}</small></div></div>
+    <div className="chennai-hero"><PixelCity value={cityMedian===null?"—":String(Math.round(cityMedian))}/><div className="chennai-hero-copy"><div className="chennai-hero-label">MEDIAN STATION AQI · CPCB SCALE</div><div className="chennai-hero-number">{cityMedian===null?"—":Math.round(cityMedian)}</div><span className="chennai-aqi-category" style={{backgroundColor:aqiColor(cityMedian)}}>{aqiCategory(cityMedian)}</span><p>Median of the station AQI readings returned by the public source. This is not a separately calculated regulatory city-wide AQI.</p><small>{aqiStations.length?aqiStations.length+" stations with AQI · latest station update "+age(latestMeasurement):state==="loading"?"Loading public station records…":"No live station readings received"}</small></div></div>
 
     <div className="chennai-metrics">
-      <article><div>STATIONS REPORTING</div><strong>{stations.length||"—"}</strong><small>Records returned by source</small></article>
-      <article><div>STATION NETWORKS</div><strong>{networkCount||"—"}</strong><small>Distinct source labels</small></article>
+      <article><div>STATIONS REPORTING</div><strong>{aqiStations.length||"—"}</strong><small>Stations with aqi_in readings</small></article>
+      <article><div>STATION NETWORKS</div><strong>{networkCount||"—"}</strong><small>Networks with AQI readings</small></article>
       <article><div>STATIONS ABOVE 200</div><strong>{stationsAbove200===null?"—":stationsAbove200}</strong><small>Poor or worse · station AQI</small></article>
       <article><div>HIGHEST STATION AQI</div><strong>{worst?.aqi == null ? "—" : Math.round(worst.aqi)}</strong><small>{worst?.name||"No AQI data"}</small></article>
+    </div>
+
+    <div className="chennai-extra-metrics">
+      {extraMetrics.map(item=><article key={item.id}>
+        <div>{item.label}</div>
+        <strong>{item.value===null?"—":item.value.toFixed(1)}<small> {item.unit}</small></strong>
+        <span>{item.count} station reports</span>
+      </article>)}
     </div>
 
     {state==="offline"?<div className="chennai-feed-error"><AlertCircle size={20}/><div><strong>Live station data is unavailable</strong><p>{error} The reference screenshot and example values are not used as fallback data.</p></div><a href="https://pol.reclaimchennai.city/#m=aqi_in&h=24" target="_blank" rel="noreferrer">Open source dashboard <ExternalLink size={13}/></a></div>:null}
@@ -571,7 +663,28 @@ export default function ChennaiAqiDashboard({ apiBase = "" }: { apiBase?: string
       </aside>
     </div>
 
-    <div className="chennai-history-placeholder"><div><Clock3 size={16}/><strong>Historical replay</strong></div><span>6h · 24h · 3d · 7d · 30d · 1y</span><small>Historical controls are not active until a public station-history endpoint is verified. This page uses the latest station snapshot only.</small></div>
-    <div className="chennai-source-note"><div><strong>DATA & ATTRIBUTION</strong><p>Station feed: Reclaim Chennai public backend (availability depends on its station endpoint). Sky frames: Reclaim Chennai published dataset CSV. AQI categories use the CPCB scale. Values are shown as received; missing readings are not interpolated.</p></div><a href="https://pol.reclaimchennai.city/#m=aqi_in&h=24" target="_blank" rel="noreferrer">Visit Reclaim Chennai AQI <ExternalLink size={13}/></a></div>
+    <section className="chennai-history-panel">
+      <div className="chennai-history-head">
+        <div><div className="eyebrow">RECLAIM CHENNAI · /API/TREND</div><h3>Air quality over time</h3><p>Source median AQI (aqi_in), station distribution and sample count.</p></div>
+        <div className="chennai-history-ranges">
+          {[6,24,72,168].map(hours=><button key={hours} className={trendHours===hours?"active":""} onClick={()=>setTrendHours(hours)}>{hours<24?hours+"h":hours===24?"24h":hours/24+"d"}</button>)}
+        </div>
+      </div>
+      {trendState==="offline"?<div className="chennai-trend-error">{trendError||"AQI history is unavailable."}</div>:null}
+      {trendChartData.length?<div className="chennai-trend-chart">
+        <ResponsiveContainer width="100%" height="100%">
+          <AreaChart data={trendChartData} margin={{top:12,right:14,left:0,bottom:0}}>
+            <defs><linearGradient id="chennaiAqiFill" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor="#d79b17" stopOpacity={0.32}/><stop offset="95%" stopColor="#d79b17" stopOpacity={0.02}/></linearGradient></defs>
+            <CartesianGrid strokeDasharray="3 4" vertical={false} stroke="#e3dfd5"/>
+            <XAxis dataKey="time" tick={{fontSize:10,fill:"#707887"}} minTickGap={34}/>
+            <YAxis tick={{fontSize:10,fill:"#707887"}} width={38}/>
+            <Tooltip formatter={(value)=>[value,"Median AQI"]}/>
+            <Area type="monotone" dataKey="median" stroke="#ac7608" fill="url(#chennaiAqiFill)" strokeWidth={2} connectNulls/>
+          </AreaChart>
+        </ResponsiveContainer>
+      </div>:<div className="chennai-trend-empty">{trendState==="loading"?"Loading AQI history…":"No AQI trend points were returned for this range."}</div>}
+      <div className="chennai-history-foot"><span>{trendData?.bucket||"—"} buckets · {trendChartData.length} points</span><span>Last source refresh: {age(updated)}</span></div>
+    </section>
+    <div className="chennai-source-note"><div><strong>DATA & ATTRIBUTION</strong><p>Stations and AQI history: Reclaim Chennai `/api/stations` and `/api/trend`. Camera snapshots: Reclaim Chennai `/api/sky?hours=24`. AQI categories use the CPCB scale. Values are shown as received; missing readings are not interpolated.</p></div><a href="https://pol.reclaimchennai.city/#m=aqi_in&h=24" target="_blank" rel="noreferrer">Visit Reclaim Chennai AQI <ExternalLink size={13}/></a></div>
   </section>;
 }
