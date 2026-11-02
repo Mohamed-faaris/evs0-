@@ -242,7 +242,9 @@ export default function ChennaiAqiDashboard({ apiBase = "" }: { apiBase?: string
   const metricLabel=POLLUTANTS.find(x=>x.id===metric)?.label??"AQI";
 
   useEffect(()=>{
-    const map=mapRef.current;if(!map||!mapReady)return;
+    const map=mapRef.current;
+    const maplibre=window.maplibregl;
+    if(!map||!mapReady||!maplibre)return;
     markers.current.forEach(marker=>marker.remove());markers.current=[];
     for(const station of filtered){
       if(station.lat===null||station.lon===null)continue;
@@ -253,7 +255,7 @@ export default function ChennaiAqiDashboard({ apiBase = "" }: { apiBase?: string
       element.textContent=value===null?"·":String(Math.round(value));
       element.title=station.name+" · "+(value===null?"No "+metricLabel+" reading":metricLabel+" "+value);
       element.addEventListener("click",event=>{event.preventDefault();event.stopPropagation();setSelected(station.id);});
-      markers.current.push(new window.maplibregl!.Marker({element,anchor:"center"}).setLngLat([station.lon,station.lat]).addTo(map));
+      markers.current.push(new maplibre.Marker({element,anchor:"center"}).setLngLat([station.lon,station.lat]).addTo(map));
     }
     if(selectedStation?.lat!==null&&selectedStation?.lon!==null&&selectedStation?.lat!==undefined&&selectedStation?.lon!==undefined)
       map.easeTo({center:[selectedStation.lon,selectedStation.lat],duration:400});
