@@ -3,7 +3,7 @@ import {
   Activity, BrainCircuit, Wind, Radio, Gauge, RefreshCw, Wifi, WifiOff,
   Zap, Map, Leaf, TrendingUp, Clock
 } from "lucide-react";
-import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
+import { Area, AreaChart, Bar, BarChart, CartesianGrid, Legend, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import ChennaiAqiDashboard from "./ChennaiAqiDashboard";
 
 type Readings = {
@@ -63,16 +63,36 @@ type SensorResponseForecast = {
   data?: { latest_raw_adc: number; smoothed_raw_adc: number; next_reading_estimate_adc: number };
   note?: string;
 };
+type EnergyProjection = { energy_kwh: number; estimated_co2_kg: number };
+type EnergyModelResult = {
+  id: string;
+  name: string;
+  forecast_active_power_w: number;
+  mae_w: number;
+  rmse_w: number;
+  validation_samples: number;
+  projections: {
+    next_24_hours: EnergyProjection;
+    next_7_days: EnergyProjection;
+    next_30_days: EnergyProjection;
+  };
+};
 type EnergyForecast = {
   available: boolean;
   reason?: string;
   model: ForecastModel;
+  selected_model?: string;
+  best_backtest_model?: string;
+  validation?: { method: string; samples: number; interpretation: string };
+  models?: EnergyModelResult[];
   data?: {
+    latest_active_power_w?: number;
     smoothed_active_power_w: number;
+    forecast_active_power_w?: number;
     projections: {
-      next_24_hours: { energy_kwh: number; estimated_co2_kg: number };
-      next_7_days: { energy_kwh: number; estimated_co2_kg: number };
-      next_30_days: { energy_kwh: number; estimated_co2_kg: number };
+      next_24_hours: EnergyProjection;
+      next_7_days: EnergyProjection;
+      next_30_days: EnergyProjection;
     };
   };
   note?: string;
@@ -204,6 +224,17 @@ export default function App() {
   const emissionFactor = carbonSummary?.data?.emission_factor_kg_co2_per_kwh ?? 0.675;
   const sessionEnergyKwh = carbonSummary?.available ? carbonSummary.data?.energy_kwh ?? null : null;
   const sessionCarbonKg = carbonSummary?.available ? carbonSummary.data?.estimated_co2_kg ?? null : null;
+  const energyModels = energyForecast?.models || [];
+  const energyModelChartData = energyModels.map((model) => ({
+    model: model.name,
+    forecast: model.forecast_active_power_w,
+    mae: model.mae_w
+  }));
+  const energyHorizonChartData = [
+    { horizon: "24 hours", ...Object.fromEntries(energyModels.map((model) => [model.id, model.projections.next_24_hours.energy_kwh])) },
+    { horizon: "7 days", ...Object.fromEntries(energyModels.map((model) => [model.id, model.projections.next_7_days.energy_kwh])) },
+    { horizon: "30 days", ...Object.fromEntries(energyModels.map((model) => [model.id, model.projections.next_30_days.energy_kwh])) }
+  ];
 
   return <main className="shell">
     <header className="topbar">
@@ -353,25 +384,65 @@ export default function App() {
       </section>
       <div className="sourcefoot">POWER SOURCE: MQTT · {powerMeterReading?.device_id || POWER_METER_DEVICE_ID} · {powerMeterReading ? "RECEIVED " + new Date(powerMeterReading.received_at).toLocaleString() : "NO METER READINGS RECEIVED"}</div>
     </section> : tab === "energy-predictions" ? <section className="content">
-      <div className="sectionhead"><div><div className="eyebrow">ENERGY USE OUTLOOK</div><h2>Energy & emissions forecast</h2></div><span className={energyForecast?.available ? "status good" : "status muted"}><i/>{energyForecast?.available ? "SES MODEL READY" : "WAITING FOR DATA"}</span></div>
+      <div className="sectionhead"><div><div className="eyebrow">ENERGY USE OUTLOOK</div><h2>Energy & emissions forecast</h2></div><span className={energyForecast?.available ? "status good" : "status muted"}><i/>{energyForecast?.available ? "MODEL SUITE READY" : "WAITING FOR DATA"}</span></div>
       <article className="prediction energy-prediction">
         <div className="predictionicon"><TrendingUp size={26}/></div>
         <div>
-          <div className="eyebrow">LIGHTWEIGHT ENERGY MODEL</div>
-          <h3>Simple exponential smoothing (SES)</h3>
-          <p>The API smooths recent MQTT active-power readings using configurable α and projects a flat load into each horizon. It is a statistical baseline, not a trained AI/ML model; it assumes recent demand remains representative.</p>
-          <div className="requirements"><span>INPUT / MQTT ACTIVE POWER</span><span>MODEL / SES</span><span>FACTOR / {fmt(emissionFactor, 3)} KG CO₂/KWH</span></div>
+          <div className="eyebrow">STATISTICAL MODEL BENCHMARK</div>
+          <h3>Multi-model energy forecast</h3>
+          <p>Compares SES, moving average, weighted moving average, Holt damped trend and linear trend. A walk-forward validation benchmark scores each model, then an inverse-error weighted ensemble combines their next-step estimates. These are statistical models, not trained AI/ML models.</p>
+          <div className="requirements"><span>INPUT / MQTT ACTIVE POWER</span><span>MODELS / 5 + ENSEMBLE</span><span>VALIDATION / WALK-FORWARD MAE + RMSE</span><span>FACTOR / {fmt(emissionFactor, 3)} KG CO₂/KWH</span></div>
         </div>
       </article>
       {energyForecast?.available && energyForecast.data ? <>
-        <div className="forecast-assumption"><Clock size={16}/> Smoothed active power: <strong>{fmt(energyForecast.data.smoothed_active_power_w, 1)} W</strong> · {energyForecast.model.samples} samples · α {fmt(energyForecast.model.alpha, 2)}</div>
+        <div className="forecast-assumption"><Clock size={16}/> Ensemble load estimate: <strong>{fmt(energyForecast.data.forecast_active_power_w, 1)} W</strong> · SES baseline {fmt(energyForecast.data.smoothed_active_power_w, 1)} W · {energyForecast.model.samples} samples</div>
         <div className="metrics energy-forecast-metrics">
           <article className="metric"><div className="metriclabel">NEXT 24 HOURS</div><div className="metricvalue">{fmt(energyForecast.data.projections.next_24_hours.energy_kwh, 2)}<small> kWh</small></div><div className="metricfoot">{fmt(energyForecast.data.projections.next_24_hours.estimated_co2_kg, 3)} kg CO₂ estimated</div></article>
           <article className="metric"><div className="metriclabel">NEXT 7 DAYS</div><div className="metricvalue">{fmt(energyForecast.data.projections.next_7_days.energy_kwh, 2)}<small> kWh</small></div><div className="metricfoot">{fmt(energyForecast.data.projections.next_7_days.estimated_co2_kg, 3)} kg CO₂ estimated</div></article>
           <article className="metric"><div className="metriclabel">NEXT 30 DAYS</div><div className="metricvalue">{fmt(energyForecast.data.projections.next_30_days.energy_kwh, 2)}<small> kWh</small></div><div className="metricfoot">{fmt(energyForecast.data.projections.next_30_days.estimated_co2_kg, 3)} kg CO₂ estimated</div></article>
         </div>
-      </> : <div className="model-wait">{energyForecast?.reason || "Waiting for enough valid MQTT power readings to initialize the energy forecast."}</div>}
-      <p className="carbon-note">These are baseline energy-use and grid-CO₂ projections, not offsets or verified emissions reductions. The model uses in-memory API history, which resets when the API restarts.</p>
+        <div className="forecast-chart-grid">
+          <article className="panel forecast-panel">
+            <div className="panelhead"><div><div className="eyebrow">NEXT-SAMPLE MODEL OUTPUT</div><h3>Predicted active power</h3></div><span className="unit">WATTS</span></div>
+            <div className="forecast-chart"><ResponsiveContainer width="100%" height="100%"><BarChart data={energyModelChartData} margin={{top:10,right:12,left:0,bottom:34}}>
+              <CartesianGrid strokeDasharray="3 4" vertical={false} stroke="#e5e0d5"/><XAxis dataKey="model" angle={-18} textAnchor="end" interval={0} height={68} tick={{fontSize:9}}/><YAxis tick={{fontSize:10}} width={44}/>
+              <Tooltip formatter={(value) => [`${fmt(Number(value), 1)} W`, "Forecast"]}/><Bar dataKey="forecast" name="Forecast power" fill="#287e83" radius={[3,3,0,0]}/>
+            </BarChart></ResponsiveContainer></div>
+          </article>
+          <article className="panel forecast-panel">
+            <div className="panelhead"><div><div className="eyebrow">ROLLING HOLDOUT</div><h3>Model error comparison</h3></div><span className="unit">LOWER IS BETTER</span></div>
+            <div className="forecast-chart"><ResponsiveContainer width="100%" height="100%"><BarChart data={energyModelChartData} margin={{top:10,right:12,left:0,bottom:34}}>
+              <CartesianGrid strokeDasharray="3 4" vertical={false} stroke="#e5e0d5"/><XAxis dataKey="model" angle={-18} textAnchor="end" interval={0} height={68} tick={{fontSize:9}}/><YAxis tick={{fontSize:10}} width={44}/>
+              <Tooltip formatter={(value) => [`${fmt(Number(value), 2)} W MAE`, "Validation error"]}/><Bar dataKey="mae" name="Mean absolute error" fill="#b47a12" radius={[3,3,0,0]}/>
+            </BarChart></ResponsiveContainer></div>
+          </article>
+        </div>
+        <article className="panel forecast-horizon-panel">
+          <div className="panelhead"><div><div className="eyebrow">CROSS-HORIZON SCENARIOS</div><h3>Projected energy by model</h3></div><span className="unit">KWH · FLAT-LOAD ASSUMPTION</span></div>
+          <div className="forecast-chart horizon-chart"><ResponsiveContainer width="100%" height="100%"><LineChart data={energyHorizonChartData} margin={{top:12,right:20,left:4,bottom:0}}>
+            <CartesianGrid strokeDasharray="3 4" vertical={false} stroke="#e5e0d5"/><XAxis dataKey="horizon" tick={{fontSize:10}}/><YAxis tick={{fontSize:10}} width={48}/>
+            <Tooltip formatter={(value) => [`${fmt(Number(value), 2)} kWh`, "Scenario"]}/><Legend wrapperStyle={{fontSize:10}}/>
+            <Line type="monotone" dataKey="ses" name="SES" stroke="#a56e00" strokeWidth={2} dot={{r:3}}/>
+            <Line type="monotone" dataKey="moving_average" name="Moving average" stroke="#287e83" strokeWidth={2} dot={{r:3}}/>
+            <Line type="monotone" dataKey="weighted_moving_average" name="Weighted moving average" stroke="#4c6fa8" strokeWidth={2} dot={{r:3}}/>
+            <Line type="monotone" dataKey="holt_damped" name="Holt damped" stroke="#9a5a9e" strokeWidth={2} dot={{r:3}}/>
+            <Line type="monotone" dataKey="linear_trend" name="Linear trend" stroke="#c05c45" strokeWidth={2} dot={{r:3}}/>
+            <Line type="monotone" dataKey="weighted_ensemble" name="Weighted ensemble" stroke="#1f2229" strokeWidth={3} dot={{r:4}}/>
+          </LineChart></ResponsiveContainer></div>
+        </article>
+        <article className="panel model-score-panel">
+          <div className="panelhead"><div><div className="eyebrow">MODEL SELECTION</div><h3>Backtest summary</h3></div><span className="unit">ONE-STEP ERROR</span></div>
+          <div className="model-score-table">
+            {energyModels.map((model) => <div className="model-score-row" key={model.id}>
+              <div><strong>{model.name}</strong><small>{model.validation_samples} validation points</small></div>
+              <span>{fmt(model.forecast_active_power_w, 1)} W forecast</span><span>MAE {fmt(model.mae_w, 2)} W</span><span>RMSE {fmt(model.rmse_w, 2)} W</span>
+            </div>)}
+          </div>
+          <div className="model-meta">BEST INDIVIDUAL BACKTEST: {energyForecast.best_backtest_model || "Not available"} · SELECTED PROJECTION: INVERSE-ERROR WEIGHTED ENSEMBLE · α {fmt(energyForecast.model.alpha, 2)}</div>
+        </article>
+      </> : <div className="model-wait">{energyForecast?.reason || "Waiting for enough valid MQTT power readings to initialize the energy models."}</div>}
+      <p className="carbon-note">The MAE/RMSE chart is a rolling one-step-ahead backtest over the current in-memory session. Long horizons still assume the selected load level remains constant; daily/weekly seasonality needs several days of persisted readings. The forecast history resets when the API restarts.</p>
+      <p className="carbon-note">Camera-based appliance recognition is not included in these meter-only models. It requires an explicitly configured camera feed and an appliance-detection dataset before individual appliance power can be estimated.</p>
     </section> : tab === "city-aqi" ? <ChennaiAqiDashboard apiBase={API} /> : <section className="content power-map-content">
       <div className="sectionhead">
         <div><div className="eyebrow">INDIA ELECTRICITY INFRASTRUCTURE</div><h2>Power Map of India</h2></div>
