@@ -418,27 +418,30 @@ app.get("/", (c) => c.json({ name: "EVS0 Dashboard API", docs: ["/api/health", "
 
 // Public Reclaim Chennai city-station source. Keep this fixed to the source
 // declared by the AQI dashboard; browser clients call EVS0, not the upstream host.
-const CHENNAI_AQI_SOURCE_URL = (process.env.CHENNAI_AQI_STATIONS_URL ||
-  "https://api.airquality.info/api/v1/cities/Chennai/stations").trim();
+const CHENNAI_AQI_STATIONS_URL = (process.env.CHENNAI_AQI_STATIONS_URL || "").trim();
 let chennaiAqiSourceUrl: URL | null = null;
-try {
-  const parsed = new URL(CHENNAI_AQI_SOURCE_URL);
-  if (
-    parsed.protocol !== "https:" ||
-    parsed.hostname !== "api.airquality.info" ||
-    parsed.port ||
-    parsed.pathname !== "/api/v1/cities/Chennai/stations" ||
-    parsed.username ||
-    parsed.password ||
-    parsed.search ||
-    parsed.hash
-  ) {
-    throw new Error("CHENNAI_AQI_STATIONS_URL must use the published HTTPS Chennai stations endpoint.");
+if (CHENNAI_AQI_STATIONS_URL) {
+  try {
+    const parsed = new URL(CHENNAI_AQI_STATIONS_URL);
+    const allowedHosts = new Set(["pol.reclaimchennai.city", "api.airquality.info"]);
+    if (
+      parsed.protocol !== "https:" ||
+      !allowedHosts.has(parsed.hostname) ||
+      parsed.port ||
+      !parsed.pathname.startsWith("/api/") ||
+      parsed.username ||
+      parsed.password ||
+      parsed.search ||
+      parsed.hash
+    ) {
+      throw new Error("CHENNAI_AQI_STATIONS_URL must be a confirmed HTTPS /api/ endpoint on pol.reclaimchennai.city or api.airquality.info.");
+    }
+    chennaiAqiSourceUrl = parsed;
+  } catch (error) {
+    console.error("[CHENNAI-AQI] Station URL rejected:", error instanceof Error ? error.message : "Invalid URL");
   }
-  chennaiAqiSourceUrl = parsed;
-} catch (error) {
-  console.error("[CHENNAI-AQI] Source URL rejected:", error instanceof Error ? error.message : "Invalid URL");
 }
+const CHENNAI_AQI_SOURCE_URL = chennaiAqiSourceUrl?.toString() || null;
 
 type ChennaiAqiSnapshot = { payload: unknown; fetchedAt: string };
 type ChennaiAqiProxyError = Error & { status?: number; code?: string };
@@ -455,8 +458,8 @@ function aqiProxyError(message: string, status: number, code: string): ChennaiAq
 async function fetchChennaiAqiSnapshot(): Promise<ChennaiAqiSnapshot> {
   if (!chennaiAqiSourceUrl) {
     throw aqiProxyError(
-      "The Chennai AQI source URL is invalid. Check CHENNAI_AQI_STATIONS_URL.",
-      503,
+      "No confirmed public AQI station endpoint is configured. The Reclaim Chennai site's public sky-camera dataset is proxied separately; set CHENNAI_AQI_STATIONS_URL only after confirming the station API path.",
+      424,
       "chennai_aqi_source_misconfigured"
     );
   }
@@ -778,7 +781,9 @@ app.get("/api/chennai-aqi/sky", async (c) => {
 });
 
 app.get("/api/chennai-aqi/source", (c) => c.json({
-  source: "Reclaim Chennai / api.airquality.info",
+  source: "Reclaim Chennai",
+  station_feed_configured: Boolean(chennaiAqiSourceUrl),
+  verified_public_dataset: "https://pol.reclaimchennai.city/api/sky/dataset.csv",
   endpoint: CHENNAI_AQI_SOURCE_URL,
   map_center: [13.0833, 80.2667],
   map_zoom: 11,
@@ -791,7 +796,7 @@ app.get("/api/chennai-aqi/stations", async (c) => {
   if (!chennaiAqiSourceUrl) {
     return c.json({
       error: "chennai_aqi_source_misconfigured",
-      message: "The Chennai AQI source URL is invalid. Check CHENNAI_AQI_STATIONS_URL."
+      message: "No confirmed public AQI station endpoint is configured. The Reclaim Chennai public sky-camera dataset is available at /api/chennai-aqi/sky. Set CHENNAI_AQI_STATIONS_URL only after confirming the station API path."
     }, 503);
   }
 
@@ -838,7 +843,7 @@ app.get("/api/chennai-aqi/stations", async (c) => {
       error: code,
       message,
       detail: proxyError.status ? undefined : error instanceof Error ? error.message : "Unknown upstream network error"
-    }, status as 502 | 503);
+    }, status as 424 | 502 | 503);
   } finally {
     if (chennaiAqiRefreshPromise === refreshPromise) {
       chennaiAqiRefreshPromise = null;
