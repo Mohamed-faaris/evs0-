@@ -147,3 +147,17 @@
 @media(max-width:980px){.chennai-map-layout{grid-template-columns:1fr}.chennai-ranking-list{max-height:360px}.chennai-selected-station{margin-top:12px}}
 @media(max-width:760px){.chennai-hero{grid-template-columns:1fr}.chennai-hero-copy{padding:8px 6px 12px}.chennai-metrics{grid-template-columns:repeat(2,minmax(0,1fr))}.chennai-map-wrap{height:470px}.chennai-feed-error{align-items:flex-start;flex-wrap:wrap}.chennai-feed-error a{margin-left:32px}}
 @media(max-width:520px){.chennai-aqi-head{align-items:flex-start;flex-direction:column}.chennai-feed-actions{width:100%;justify-content:space-between}.chennai-metrics{grid-template-columns:1fr 1fr}.chennai-metrics article{padding:11px}.chennai-metric-switch button{padding:6px 7px;font-size:9px}.chennai-map-wrap{height:420px}.chennai-map-footer{flex-direction:column}.chennai-source-note{align-items:flex-start;flex-direction:column}}
+
+
+/* Native OSM tile map: no third-party JavaScript executes in the dashboard. */
+.chennai-map{position:relative;overflow:hidden;touch-action:none;user-select:none;cursor:grab;background:#e5e2d8}
+.chennai-map:active{cursor:grabbing}
+.chennai-tile-layer{position:absolute;inset:0;pointer-events:none}
+.chennai-tile-layer img{position:absolute;width:256px;height:256px;max-width:none;display:block;pointer-events:none}
+.chennai-map-marker{position:absolute;z-index:3;transform:translate(-50%,-50%);min-width:26px;height:26px;padding:0 4px;border:2px solid #152238;background:var(--marker-color);color:#101827;font:800 9px 'Pixelify Sans',monospace;box-shadow:2px 2px 0 #152238;cursor:pointer;image-rendering:pixelated}
+.chennai-map-marker.selected{outline:3px solid #fff;outline-offset:2px;transform:translate(-50%,-50%) scale(1.15)}
+.chennai-map-controls{position:absolute;top:12px;right:12px;z-index:5;display:grid;gap:4px}
+.chennai-map-controls button{width:32px;height:32px;border:2px solid #1f2229;background:#fff;color:#172033;font-size:17px;font-weight:800;box-shadow:2px 2px 0 #1f2229;cursor:pointer}
+.chennai-map-controls button:hover{background:#ffd84a}
+.chennai-map-zoom-label{position:absolute;right:12px;bottom:12px;z-index:4;padding:6px 8px;background:#ffffffed;border:1px solid #d9d3c5;color:#586070;font-size:8px;font-weight:800;letter-spacing:.5px;pointer-events:none}
+.chennai-map-tile-error{position:absolute;left:12px;top:12px;z-index:5;padding:7px 9px;max-width:230px;background:#fff0ed;border:1px solid #c43a3a;color:#7d2d2d;font-size:9px;pointer-events:none}
