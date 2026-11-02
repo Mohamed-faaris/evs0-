@@ -666,16 +666,18 @@ app.get("/", (c) => c.json({ name: "EVS0 Dashboard API", docs: ["/api/health", "
 
 // Public Reclaim Chennai city-station source. Keep this fixed to the source
 // declared by the AQI dashboard; browser clients call EVS0, not the upstream host.
+// pol.reclaimchennai.city publishes the station snapshot Reclaim Chennai's own
+// AQI dashboard renders (the previous api.airquality.info host no longer resolves).
 const CHENNAI_AQI_SOURCE_URL = (process.env.CHENNAI_AQI_STATIONS_URL ||
-  "https://api.airquality.info/api/v1/cities/Chennai/stations").trim();
+  "https://pol.reclaimchennai.city/api/stations").trim();
 let chennaiAqiSourceUrl: URL | null = null;
 try {
   const parsed = new URL(CHENNAI_AQI_SOURCE_URL);
   if (
     parsed.protocol !== "https:" ||
-    parsed.hostname !== "api.airquality.info" ||
+    parsed.hostname !== "pol.reclaimchennai.city" ||
     parsed.port ||
-    parsed.pathname !== "/api/v1/cities/Chennai/stations" ||
+    parsed.pathname !== "/api/stations" ||
     parsed.username ||
     parsed.password ||
     parsed.search ||
@@ -687,6 +689,29 @@ try {
 } catch (error) {
   console.error("[CHENNAI-AQI] Source URL rejected:", error instanceof Error ? error.message : "Invalid URL");
 }
+
+const CHENNAI_AQI_SOURCE_LABEL = "pol.reclaimchennai.city";
+const CHENNAI_CITY_LABEL = "chennai";
+
+// The upstream snapshot covers the wider metro region and ignores a ?city=
+// filter, so scope records to the Chennai label this endpoint promises. Records
+// without a city label pass through untouched, and an unexpected label change
+// never blanks the feed.
+function scopeChennaiStations(payload: unknown): unknown {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return payload;
+  const record = payload as Record<string, unknown>;
+  if (!Array.isArray(record.stations)) return payload;
+  const tagged = record.stations.filter(
+    (station) => station !== null && typeof station === "object" && typeof (station as { city?: unknown }).city === "string"
+  );
+  if (tagged.length === 0) return payload;
+  const chennai = tagged.filter(
+    (station) => (station as { city: string }).city.trim().toLowerCase() === CHENNAI_CITY_LABEL
+  );
+  if (chennai.length === 0) return payload;
+  return { ...record, stations: chennai };
+}
+
 
 type ChennaiAqiSnapshot = { payload: unknown; fetchedAt: string };
 type ChennaiAqiProxyError = Error & { status?: number; code?: string };
@@ -805,11 +830,11 @@ async function fetchChennaiAqiSnapshot(): Promise<ChennaiAqiSnapshot> {
     );
   }
 
-  return { payload, fetchedAt: new Date().toISOString() };
+  return { payload: scopeChennaiStations(payload), fetchedAt: new Date().toISOString() };
 }
 
 app.get("/api/chennai-aqi/source", (c) => c.json({
-  source: "Reclaim Chennai / api.airquality.info",
+  source: "Reclaim Chennai / " + CHENNAI_AQI_SOURCE_LABEL,
   endpoint: CHENNAI_AQI_SOURCE_URL,
   map_center: [13.0833, 80.2667],
   map_zoom: 11,
@@ -827,7 +852,7 @@ app.get("/api/chennai-aqi/stations", async (c) => {
   }
 
   if (chennaiAqiCache && chennaiAqiCache.expiresAt > Date.now()) {
-    c.header("X-AQI-Source", "api.airquality.info");
+    c.header("X-AQI-Source", CHENNAI_AQI_SOURCE_LABEL);
     c.header("X-AQI-Cache", "HIT");
     c.header("X-AQI-Updated-At", chennaiAqiCache.fetchedAt);
     return c.json(chennaiAqiCache.payload, 200, { "Cache-Control": "public, max-age=30" });
@@ -851,7 +876,7 @@ app.get("/api/chennai-aqi/stations", async (c) => {
       };
     }
 
-    c.header("X-AQI-Source", "api.airquality.info");
+    c.header("X-AQI-Source", CHENNAI_AQI_SOURCE_LABEL);
     c.header("X-AQI-Cache", "MISS");
     c.header("X-AQI-Updated-At", snapshot.fetchedAt);
     return c.json(snapshot.payload, 200, { "Cache-Control": "public, max-age=30" });

@@ -44,6 +44,8 @@ function rowsFrom(payload: unknown): unknown[] {
 
 function normalize(payload: unknown): Station[] {
   const pollutantKeys = POLLUTANTS.filter((item) => item.id !== "aqi").map((item) => item.id);
+  // Upstream aliases for keys the feed publishes under a different name.
+  const pollutantAliases: Record<string, readonly string[]> = { o3: ["o3", "ozone"] };
   return rowsFrom(payload).flatMap((entry) => {
     if (!entry || typeof entry !== "object") return [];
     const raw = entry as Record<string, unknown>;
@@ -51,15 +53,22 @@ function normalize(payload: unknown): Station[] {
     const coords = Array.isArray(raw.coordinates) ? raw.coordinates : null;
     const lat = num(raw.lat ?? raw.latitude ?? geo.lat ?? (coords ? coords[1] : null));
     const lon = num(raw.lon ?? raw.lng ?? raw.longitude ?? geo.lon ?? geo.lng ?? (coords ? coords[0] : null));
-    const aqi = num(raw.aqi ?? raw.AQI ?? raw.current_aqi ?? raw.index);
+    // aqi_in is the CPCB/India scale this dashboard renders; plain `aqi` from
+    // sources that publish both is the US scale and would skew the CPCB legend.
+    const aqi = num(raw.aqi_in ?? raw.aqi ?? raw.AQI ?? raw.current_aqi ?? raw.index);
     const values = (raw.pollutants ?? raw.measurements ?? raw.iaqi ?? raw.metrics ?? {}) as Record<string, unknown>;
     const pollutants: Record<string, number> = {};
     for (const key of pollutantKeys) {
-      const value = num(values[key] ?? raw[key] ?? raw[key.toUpperCase()]);
+      const candidates = pollutantAliases[key] ?? [key, key.toUpperCase()];
+      let value: number | null = null;
+      for (const candidate of candidates) {
+        value = num(values[candidate] ?? raw[candidate]);
+        if (value !== null) break;
+      }
       if (value !== null) pollutants[key] = value;
     }
-    const updated = raw.timestamp ?? raw.updated_at ?? raw.last_updated ?? raw.time;
-    const name = String(raw.name ?? raw.station_name ?? raw.location ?? raw.title ?? "Unnamed station");
+    const updated = raw.timestamp ?? raw.updated_at ?? raw.station_updated_at ?? raw.last_updated ?? raw.time;
+    const name = String(raw.name ?? raw.station_name ?? raw.location_name ?? raw.location ?? raw.title ?? "Unnamed station");
     const source = String(raw.source ?? raw.provider ?? raw.network ?? raw.source_name ?? "Source not reported");
     const providedId = raw.uid ?? raw.id ?? raw.station_id ?? raw.code;
     // A deterministic fingerprint keeps selection stable when an upstream omits
@@ -386,6 +395,6 @@ export default function ChennaiAqiDashboard({ apiBase = "" }: { apiBase?: string
     </div>
 
     <div className="chennai-history-placeholder"><div><Clock3 size={16}/><strong>Historical replay</strong></div><span>6h · 24h · 3d · 7d · 30d · 1y</span><small>Historical controls are not active until a public station-history endpoint is verified. This page uses the latest station snapshot only.</small></div>
-    <div className="chennai-source-note"><div><strong>DATA & ATTRIBUTION</strong><p>Station source endpoint: api.airquality.info · Chennai. Dashboard reference: Reclaim Chennai. AQI categories use the CPCB scale. Values are shown as received; missing readings are not interpolated.</p></div><a href="https://pol.reclaimchennai.city/#m=aqi_in&h=24" target="_blank" rel="noreferrer">Visit Reclaim Chennai AQI <ExternalLink size={13}/></a></div>
+    <div className="chennai-source-note"><div><strong>DATA & ATTRIBUTION</strong><p>Station source endpoint: pol.reclaimchennai.city · Chennai. Dashboard reference: Reclaim Chennai. AQI categories use the CPCB scale. Values are shown as received; missing readings are not interpolated.</p></div><a href="https://pol.reclaimchennai.city/#m=aqi_in&h=24" target="_blank" rel="noreferrer">Visit Reclaim Chennai AQI <ExternalLink size={13}/></a></div>
   </section>;
 }
