@@ -4,6 +4,7 @@ import {
   Zap, Map, Leaf, TrendingUp, Clock
 } from "lucide-react";
 import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
+import ChennaiAqiDashboard from "./ChennaiAqiDashboard";
 
 type Readings = {
   raw_adc?: number;
@@ -76,7 +77,7 @@ type EnergyForecast = {
   };
   note?: string;
 };
-type Tab = "air-quality" | "aqi-predictions" | "energy" | "energy-predictions" | "power-map";
+type Tab = "air-quality" | "aqi-predictions" | "energy" | "energy-predictions" | "city-aqi" | "power-map";
 
 const API = import.meta.env.VITE_API_BASE || "";
 const POWER_METER_DEVICE_ID = import.meta.env.VITE_POWER_METER_DEVICE_ID || "power-meter-001";
@@ -200,6 +201,7 @@ export default function App() {
 
     <nav className="tabs dashboard-tabs" aria-label="Dashboard sections">
       <button className={tab === "air-quality" ? "active" : ""} onClick={() => setTab("air-quality")}><Wind size={16}/> Air Quality</button>
+      <button className={tab === "city-aqi" ? "active" : ""} onClick={() => setTab("city-aqi")}><Map size={16}/> Chennai AQI Map</button>
       <button className={tab === "aqi-predictions" ? "active" : ""} onClick={() => setTab("aqi-predictions")}><BrainCircuit size={16}/> AQI Predictions</button>
       <button className={tab === "energy" ? "active" : ""} onClick={() => setTab("energy")}><Zap size={16}/> Energy & Carbon</button>
       <button className={tab === "energy-predictions" ? "active" : ""} onClick={() => setTab("energy-predictions")}><TrendingUp size={16}/> Energy Forecast</button>
@@ -346,7 +348,7 @@ export default function App() {
         </div>
       </> : <div className="model-wait">{energyForecast?.reason || "Waiting for enough valid MQTT power readings to initialize the energy forecast."}</div>}
       <p className="carbon-note">These are baseline energy-use and grid-CO₂ projections, not offsets or verified emissions reductions. The model uses in-memory API history, which resets when the API restarts.</p>
-    </section> : <section className="content power-map-content">
+    </section> : tab === "city-aqi" ? <ChennaiAqiDashboard apiBase={API} /> : <section className="content power-map-content">
       <div className="sectionhead">
         <div><div className="eyebrow">INDIA ELECTRICITY INFRASTRUCTURE</div><h2>Power Map of India</h2></div>
         <a className="power-map-open" href={API + "/api/power-map/open"} target="_blank" rel="noreferrer noopener">Open full map <Map size={14}/></a>
