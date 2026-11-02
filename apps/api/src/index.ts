@@ -611,31 +611,55 @@ async function fetchChennaiSkySnapshot(): Promise<{ payload: unknown; fetchedAt:
   return { payload, fetchedAt: new Date().toISOString() };
 }
 
-app.get("/api/chennai-aqi/sky/image/:id", async (c) => {
-  const id = c.req.param("id");
-  if (!/^\d{1,10}$/.test(id)) {
-    return c.json({ error: "invalid_sky_image_id", message: "Image ID must contain digits only." }, 400);
+type SkyImageProxyError = Error & { status?: number; upstreamStatus?: number };
+const skyImageCache = new Map<string, { bytes: Uint8Array; expiresAt: number }>();
+const skyImageInflight = new Map<string, Promise<Uint8Array>>();
+const SKY_IMAGE_CACHE_MS = 15 * 60_000;
+const SKY_IMAGE_CACHE_MAX_ENTRIES = 48;
+const SKY_IMAGE_MAX_BYTES = 2 * 1024 * 1024;
+const SKY_IMAGE_MAX_CONCURRENT_UPSTREAM = 6;
+let skyImageActiveUpstream = 0;
+
+async function getChennaiSkyImage(id: string): Promise<Uint8Array> {
+  const cached = skyImageCache.get(id);
+  if (cached && cached.expiresAt > Date.now()) return cached.bytes;
+  if (cached) skyImageCache.delete(id);
+
+  const pending = skyImageInflight.get(id);
+  if (pending) return pending;
+
+  if (skyImageActiveUpstream >= SKY_IMAGE_MAX_CONCURRENT_UPSTREAM) {
+    throw Object.assign(new Error("The sky image proxy is busy. Retry shortly."), { status: 429 });
   }
-  try {
+
+  skyImageActiveUpstream += 1;
+  const request = (async () => {
     const upstream = await fetch("https://pol.reclaimchennai.city/sky/" + id + ".jpg", {
-      headers: { Accept: "image/jpeg", Referer: "https://pol.reclaimchennai.city/", "User-Agent": "EVS0-Chennai-AQI-Proxy/1.0" },
+      headers: {
+        Accept: "image/jpeg",
+        Referer: "https://pol.reclaimchennai.city/",
+        "User-Agent": "EVS0-Chennai-AQI-Proxy/1.0"
+      },
       redirect: "error",
       signal: AbortSignal.timeout(10_000)
     });
+
     const contentType = upstream.headers.get("content-type") || "";
     if (!upstream.ok || !contentType.toLowerCase().startsWith("image/jpeg") || !upstream.body) {
+      const status = upstream.status;
       await upstream.body?.cancel().catch(() => {});
-      return c.json({
-        error: "sky_image_unavailable",
-        message: "The source camera frame could not be retrieved.",
-        upstream_status: upstream.status
-      }, 502);
+      throw Object.assign(new Error("The source camera frame returned HTTP " + status + " or an unexpected content type."), {
+        status: 502,
+        upstreamStatus: status
+      });
     }
-    const length = Number(upstream.headers.get("content-length"));
-    if (Number.isFinite(length) && length > 2 * 1024 * 1024) {
+
+    const declaredLength = Number(upstream.headers.get("content-length"));
+    if (Number.isFinite(declaredLength) && declaredLength > SKY_IMAGE_MAX_BYTES) {
       await upstream.body.cancel().catch(() => {});
-      return c.json({ error: "sky_image_too_large", message: "The source camera frame exceeded 2 MiB." }, 502);
+      throw Object.assign(new Error("The source camera frame exceeded 2 MiB."), { status: 502 });
     }
+
     const reader = upstream.body.getReader();
     const chunks: Uint8Array[] = [];
     let totalBytes = 0;
@@ -644,33 +668,64 @@ app.get("/api/chennai-aqi/sky/image/:id", async (c) => {
         const { done, value } = await reader.read();
         if (done) break;
         totalBytes += value.byteLength;
-        if (totalBytes > 2 * 1024 * 1024) {
+        if (totalBytes > SKY_IMAGE_MAX_BYTES) {
           await reader.cancel().catch(() => {});
-          return c.json({ error: "sky_image_too_large", message: "The source camera frame exceeded 2 MiB." }, 502);
+          throw Object.assign(new Error("The source camera frame exceeded 2 MiB."), { status: 502 });
         }
         chunks.push(value);
       }
     } finally {
       reader.releaseLock();
     }
+
     const bytes = new Uint8Array(totalBytes);
     let offset = 0;
-    for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
+    for (const chunk of chunks) {
+      bytes.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
+
+    skyImageCache.set(id, { bytes, expiresAt: Date.now() + SKY_IMAGE_CACHE_MS });
+    while (skyImageCache.size > SKY_IMAGE_CACHE_MAX_ENTRIES) {
+      const oldest = skyImageCache.keys().next().value;
+      if (oldest === undefined) break;
+      skyImageCache.delete(oldest);
+    }
+    return bytes;
+  })().finally(() => {
+    skyImageActiveUpstream = Math.max(0, skyImageActiveUpstream - 1);
+    skyImageInflight.delete(id);
+  });
+
+  skyImageInflight.set(id, request);
+  return request;
+}
+
+app.get("/api/chennai-aqi/sky/image/:id", async (c) => {
+  const id = c.req.param("id");
+  if (!/^\d{1,10}$/.test(id)) {
+    return c.json({ error: "invalid_sky_image_id", message: "Image ID must contain 1–10 digits." }, 400);
+  }
+
+  try {
+    const bytes = await getChennaiSkyImage(id);
     return new Response(bytes, {
       status: 200,
       headers: {
         "Content-Type": "image/jpeg",
-        "Content-Length": String(totalBytes),
+        "Content-Length": String(bytes.byteLength),
         "Cache-Control": "public, max-age=900, stale-while-revalidate=3600",
         "X-Content-Type-Options": "nosniff"
       }
     });
   } catch (error) {
+    const proxyError = error as SkyImageProxyError;
+    const status = proxyError.status === 429 ? 429 : 502;
     return c.json({
-      error: "sky_image_upstream_unavailable",
-      message: "The source camera frame could not be fetched.",
-      detail: error instanceof Error ? error.message : "Unknown upstream error"
-    }, 502);
+      error: status === 429 ? "sky_image_proxy_busy" : "sky_image_upstream_unavailable",
+      message: error instanceof Error ? error.message : "The source camera frame could not be fetched.",
+      upstream_status: proxyError.upstreamStatus ?? null
+    }, status);
   }
 });
 
