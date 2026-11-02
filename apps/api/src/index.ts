@@ -414,7 +414,7 @@ app.get("/api/aqi/predictions", (c) => c.json({
   available: false,
   reason: "No validated prediction model is configured yet. Predictions will be enabled after collecting and validating historical data."
 }));
-app.get("/", (c) => c.json({ name: "EVS0 Dashboard API", docs: ["/api/health", "/api/devices", "/api/chennai-aqi/source", "/api/chennai-aqi/stations", "/api/readings/latest", "/api/readings/history", "/api/power-meter/latest", "/api/power-meter/history", "/api/power-meter/carbon", "/api/power-meter/forecast", "/api/aqi/current", "/api/aqi/predictions", "/api/aqi/response-forecast"] }));
+app.get("/", (c) => c.json({ name: "EVS0 Dashboard API", docs: ["/api/health", "/api/devices", "/api/chennai-aqi/source", "/api/chennai-aqi/stations", "/api/chennai-aqi/sky", "/api/chennai-aqi/sky/image/:id", "/api/readings/latest", "/api/readings/history", "/api/power-meter/latest", "/api/power-meter/history", "/api/power-meter/carbon", "/api/power-meter/forecast", "/api/aqi/current", "/api/aqi/predictions", "/api/aqi/response-forecast"] }));
 
 // Public Reclaim Chennai city-station source. Keep this fixed to the source
 // declared by the AQI dashboard; browser clients call EVS0, not the upstream host.
