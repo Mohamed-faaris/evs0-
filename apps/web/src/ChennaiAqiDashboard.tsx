@@ -652,7 +652,7 @@ export default function ChennaiAqiDashboard({ apiBase = "" }: { apiBase?: string
           throw new Error("The source returned an invalid AQI trend response.");
         }
         if(disposed)return;
-        setTrendData({...payload as TrendDataset,requestedHours:trendHours});
+        setTrendData({...(payload as TrendDataset),requestedHours:trendHours});
         setTrendUpdated(response.headers.get("X-AQI-Updated-At"));
         setTrendState("online");
       }catch(err){
