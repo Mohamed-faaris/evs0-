@@ -88,12 +88,13 @@ The default factor is 0.675 kg CO₂/kWh, the FY2025-26 all-India weighted-avera
 
 ### Lightweight forecasting models
 
-The API offers two simple exponential-smoothing (SES) baselines:
-- `GET /api/aqi/response-forecast` estimates the next MQ-135 raw ADC response. It is for sensor-response smoothing and drift monitoring only; it does not output AQI, PM2.5, PM10, or pollutant concentrations.
-- `GET /api/power-meter/forecast` smooths recent active-power readings and projects a flat load over 24 hours, 7 days, and 30 days, including the associated grid-CO₂ estimates.
+The API exposes:
+- `GET /api/aqi/response-forecast`: SES estimates the next MQ-135 raw ADC response for sensor-response monitoring only. It is not AQI, PM2.5, PM10, or a pollutant-concentration prediction.
+- `GET /api/power-meter/forecast`: compares SES, moving average, weighted moving average, Holt damped trend, and linear trend. It scores them using rolling one-step-ahead walk-forward MAE/RMSE and combines them with an inverse-error weighted ensemble. The API returns model forecasts and flat-load energy/CO₂ scenarios for 24 hours, 7 days, and 30 days. The Energy Forecast page graphs model power estimates, validation error, and horizon comparisons.
 
-Configure `SENSOR_FORECAST_ALPHA` and `ENERGY_FORECAST_ALPHA` (default `0.25`, valid range greater than 0 through 1), `FORECAST_MIN_SAMPLES` (default `10`), and `FORECAST_WINDOW_SAMPLES` (default `120`) in the root `.env`. Higher alpha values react faster to recent readings; lower values smooth more strongly. Forecasts are unavailable until the configured minimum sample count is reached. These are statistical baselines, not trained AI/ML models. The API's in-memory reading history is cleared when the API restarts. Power-meter readings include a mock-process session ID; the API only returns estimates for the current session while MQTT availability is online and the latest sample is fresh. Configure POWER_METER_MAX_AGE_SECONDS (default 20 seconds) to adjust the freshness window. Redelivered samples are deduplicated by session and sequence before smoothing.
+Configure `SENSOR_FORECAST_ALPHA`, `ENERGY_FORECAST_ALPHA` (default `0.25`, valid range greater than 0 through 1), `FORECAST_MIN_SAMPLES` (default `10`), and `FORECAST_WINDOW_SAMPLES` (default `120`) in the root `.env`. Forecasts are unavailable until the configured minimum number of valid samples is reached. Model scores measure short-step fit on the current in-memory session; they are not calibrated confidence intervals. Long-range energy outputs still assume the estimated load remains constant. Do not interpret them as seasonality-aware daily/weekly forecasts. Several days of persisted, time-aggregated readings are needed before implementing seasonal models such as seasonal naive or Holt-Winters. The API history resets on API restart.
 
+Power-meter liveness and forecast history are separate checks: the API requires the meter to be online and its newest reading to be fresh, then retains older deduplicated samples from the same session for model fitting. This prevents a 20-second device freshness threshold from limiting a 5-second publisher to only four forecast samples. Redelivered telemetry is deduplicated by session and sequence.
 
 
 The app does not fabricate official AQI or AQI predictions from the MQ-135. MQ-135 alone does not provide PM2.5, PM10, or official CPCB AQI. AQI prediction requires calibrated pollutant measurements, historical training data, and a validated model.
