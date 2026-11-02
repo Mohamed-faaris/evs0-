@@ -1,6 +1,4 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import maplibregl from "maplibre-gl";
-import "maplibre-gl/dist/maplibre-gl.css";
 import { AlertCircle, Clock3, ExternalLink, Filter, MapPin, RefreshCw, Search } from "lucide-react";
 
 type Station = {
@@ -9,6 +7,25 @@ type Station = {
   updatedAt: string | null; pollutants: Record<string, number>;
 };
 type FeedState = "loading" | "online" | "offline";
+type MapLibreMap = {
+  addControl: (control: unknown, position?: string) => void;
+  on: (event: string, callback: () => void) => void;
+  easeTo: (options: Record<string, unknown>) => void;
+  remove: () => void;
+};
+type MapLibreMarker = { remove: () => void };
+type MapLibreRuntime = {
+  Map: new (options: Record<string, unknown>) => MapLibreMap;
+  NavigationControl: new (options: Record<string, unknown>) => unknown;
+  Marker: new (options: Record<string, unknown>) => {
+    setLngLat: (coordinates: [number, number]) => {
+      addTo: (map: MapLibreMap) => MapLibreMarker;
+    };
+  };
+};
+declare global {
+  interface Window { maplibregl?: MapLibreRuntime }
+}
 const CITY_CENTER: [number, number] = [80.2667, 13.0833];
 const POLLUTANTS = [
   { id: "aqi", label: "AQI" }, { id: "pm25", label: "PM2.5" },
@@ -145,9 +162,9 @@ export default function ChennaiAqiDashboard({ apiBase = "" }: { apiBase?: string
   const [selected,setSelected]=useState<string|null>(null);
   const [retry,setRetry]=useState(0);
   const mapEl=useRef<HTMLDivElement|null>(null);
-  const mapRef=useRef<maplibregl.Map|null>(null);
+  const mapRef=useRef<MapLibreMap|null>(null);
   const mapReady=useRef(false);
-  const markers=useRef<maplibregl.Marker[]>([]);
+  const markers=useRef<MapLibreMarker[]>([]);
 
   useEffect(()=>{
     let active=true;
@@ -176,16 +193,38 @@ export default function ChennaiAqiDashboard({ apiBase = "" }: { apiBase?: string
   },[apiBase,retry]);
 
   useEffect(()=>{
+    let cancelled=false;
+    let script:HTMLScriptElement|null=null;
     if(!mapEl.current||mapRef.current)return;
-    const map=new maplibregl.Map({
-      container:mapEl.current,center:CITY_CENTER,zoom:10.5,minZoom:8,maxZoom:17,
-      attributionControl:true,
-      style:{version:8,sources:{osm:{type:"raster",tiles:["https://tile.openstreetmap.org/{z}/{x}/{y}.png"],tileSize:256,attribution:"© OpenStreetMap contributors"}},layers:[{id:"osm-base",type:"raster",source:"osm"}]}
-    });
-    map.addControl(new maplibregl.NavigationControl({showCompass:false}),"top-right");
-    mapRef.current=map;
-    map.on("load",()=>{mapReady.current=true;});
-    return()=>{markers.current.forEach(marker=>marker.remove());markers.current=[];map.remove();mapRef.current=null;mapReady.current=false;};
+    const initMap=()=>{
+      if(cancelled||!mapEl.current||!window.maplibregl)return;
+      const lib=window.maplibregl;
+      const map=new lib.Map({
+        container:mapEl.current,center:CITY_CENTER,zoom:10.5,minZoom:8,maxZoom:17,
+        attributionControl:true,
+        style:{version:8,sources:{osm:{type:"raster",tiles:["https://tile.openstreetmap.org/{z}/{x}/{y}.png"],tileSize:256,attribution:"© OpenStreetMap contributors"}},layers:[{id:"osm-base",type:"raster",source:"osm"}]}
+      });
+      map.addControl(new lib.NavigationControl({showCompass:false}),"top-right");
+      mapRef.current=map;
+      map.on("load",()=>{mapReady.current=true;});
+    };
+    if(window.maplibregl) initMap();
+    else {
+      script=document.createElement("script");
+      script.src="https://unpkg.com/maplibre-gl@5.24.0/dist/maplibre-gl.js";
+      script.async=true;
+      script.onload=initMap;
+      script.onerror=()=>{if(!cancelled)setError("The map renderer could not be loaded from its CDN.");};
+      const css=document.createElement("link");
+      css.rel="stylesheet";
+      css.href="https://unpkg.com/maplibre-gl@5.24.0/dist/maplibre-gl.css";
+      if(!document.querySelector('link[data-chennai-maplibre="true"]')) {
+        css.dataset.chennaiMaplibre="true";
+        document.head.appendChild(css);
+      }
+      document.head.appendChild(script);
+    }
+    return()=>{cancelled=true;markers.current.forEach(marker=>marker.remove());markers.current=[];mapRef.current?.remove();mapRef.current=null;mapReady.current=false;if(script)script.remove();};
   },[]);
 
   const sourceOptions=useMemo(()=>["all",...new Set(stations.map(st=>st.source).filter(Boolean))],[stations]);
@@ -214,7 +253,7 @@ export default function ChennaiAqiDashboard({ apiBase = "" }: { apiBase?: string
       element.textContent=value===null?"·":String(Math.round(value));
       element.title=station.name+" · "+(value===null?"No "+metricLabel+" reading":metricLabel+" "+value);
       element.addEventListener("click",event=>{event.preventDefault();event.stopPropagation();setSelected(station.id);});
-      markers.current.push(new maplibregl.Marker({element,anchor:"center"}).setLngLat([station.lon,station.lat]).addTo(map));
+      markers.current.push(new window.maplibregl!.Marker({element,anchor:"center"}).setLngLat([station.lon,station.lat]).addTo(map));
     }
     if(selectedStation?.lat!==null&&selectedStation?.lon!==null&&selectedStation?.lat!==undefined&&selectedStation?.lon!==undefined)
       map.easeTo({center:[selectedStation.lon,selectedStation.lat],duration:400});
