@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Activity, BrainCircuit, Wind, Radio, Gauge, RefreshCw, Wifi, WifiOff,
-  Zap, Map, Leaf, TrendingUp, Clock
+  Zap, Map as MapIcon, Leaf, TrendingUp, Clock
 } from "lucide-react";
 import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import ChennaiAqiDashboard from "./ChennaiAqiDashboard";
@@ -225,11 +225,11 @@ export default function App() {
 
     <nav className="tabs dashboard-tabs" aria-label="Dashboard sections">
       <button className={tab === "air-quality" ? "active" : ""} onClick={() => setTab("air-quality")}><Wind size={16}/> Air Quality</button>
-      <button className={tab === "city-aqi" ? "active" : ""} onClick={() => setTab("city-aqi")}><Map size={16}/> Chennai AQI Map</button>
+      <button className={tab === "city-aqi" ? "active" : ""} onClick={() => setTab("city-aqi")}><MapIcon size={16}/> Chennai AQI Map</button>
       <button className={tab === "aqi-predictions" ? "active" : ""} onClick={() => setTab("aqi-predictions")}><BrainCircuit size={16}/> AQI Predictions</button>
       <button className={tab === "energy" ? "active" : ""} onClick={() => setTab("energy")}><Zap size={16}/> Energy & Carbon</button>
       <button className={tab === "energy-predictions" ? "active" : ""} onClick={() => setTab("energy-predictions")}><TrendingUp size={16}/> Energy Forecast</button>
-      <button className={tab === "power-map" ? "active" : ""} onClick={() => setTab("power-map")}><Map size={16}/> Power Map</button>
+      <button className={tab === "power-map" ? "active" : ""} onClick={() => setTab("power-map")}><MapIcon size={16}/> Power Map</button>
     </nav>
 
     {tab === "air-quality" ? <section className="content">
@@ -375,7 +375,7 @@ export default function App() {
     </section> : tab === "city-aqi" ? <ChennaiAqiDashboard apiBase={API} /> : <section className="content power-map-content">
       <div className="sectionhead">
         <div><div className="eyebrow">INDIA ELECTRICITY INFRASTRUCTURE</div><h2>Power Map of India</h2></div>
-        <a className="power-map-open" href={API + "/api/power-map/open"} target="_blank" rel="noreferrer noopener">Open full map <Map size={14}/></a>
+        <a className="power-map-open" href={API + "/api/power-map/open"} target="_blank" rel="noreferrer noopener">Open full map <MapIcon size={14}/></a>
       </div>
       <div className="power-map-attribution">
         <span>POWER MAP OF INDIA</span>
