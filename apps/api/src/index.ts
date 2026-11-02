@@ -221,7 +221,7 @@ app.get("/api/devices", (c) => {
     state: states.get(device_id) || null,
     availability: availability.get(device_id) || null,
     latest: device_id === POWER_METER_DEVICE_ID
-      ? getCurrentPowerMeterReadings().at(-1) || null
+      ? getLatestPowerMeterReading()
       : [...readings].reverse().find((reading) => reading.device_id === device_id) || null
   })));
 });
@@ -231,7 +231,7 @@ app.get("/api/readings/latest", (c) => {
   return c.json({ data: latest });
 });
 app.get("/api/power-meter/latest", (c) => {
-  const latest = getCurrentPowerMeterReadings().at(-1) || null;
+  const latest = getLatestPowerMeterReading();
   return c.json({ data: latest });
 });
 
@@ -274,10 +274,42 @@ function matchesCurrentPowerMeterSession(reading: Telemetry): boolean {
   return !(typeof reading.session_id === "string" && reading.session_id.length > 0);
 }
 
+function getLegacyPowerMeterSessionStartMs(): number | null {
+  let previousUptime: number | undefined;
+  let latestSessionStartMs: number | null = null;
+
+  // MQTT messages are appended in receive order. For legacy meters without a
+  // session UUID, an uptime rollback identifies a reboot boundary.
+  for (const reading of readings) {
+    if (
+      reading.device_id !== POWER_METER_DEVICE_ID ||
+      reading.device_type !== "power_meter" ||
+      (typeof reading.session_id === "string" && reading.session_id.length > 0) ||
+      typeof reading.uptime_seconds !== "number" ||
+      !Number.isFinite(reading.uptime_seconds)
+    ) continue;
+
+    if (previousUptime !== undefined && reading.uptime_seconds < previousUptime) {
+      const receivedAt = Date.parse(reading.received_at);
+      if (Number.isFinite(receivedAt)) latestSessionStartMs = receivedAt;
+    }
+    previousUptime = reading.uptime_seconds;
+  }
+
+  return latestSessionStartMs;
+}
+
 function collectPowerMeterReadings(requireLive: boolean): Telemetry[] {
   const deduplicated = new Map<string, Telemetry>();
+  const legacySessionStartMs = getLegacyPowerMeterSessionStartMs();
+
   for (const reading of readings) {
     if (!matchesCurrentPowerMeterSession(reading)) continue;
+
+    if (!reading.session_id && legacySessionStartMs !== null) {
+      const receivedAt = Date.parse(reading.received_at);
+      if (!Number.isFinite(receivedAt) || receivedAt < legacySessionStartMs) continue;
+    }
 
     const session = reading.session_id || "legacy";
     const sampleKey = typeof reading.sequence === "number" && Number.isFinite(reading.sequence)
@@ -294,16 +326,27 @@ function collectPowerMeterReadings(requireLive: boolean): Telemetry[] {
     return leftTime - rightTime;
   });
 
-  // Freshness is a device-liveness check, not a per-sample history filter.
-  // Keep older samples from the active session for forecasting while ensuring
-  // the newest sample is recent and the broker still reports the meter online.
+  // Liveness uses receive order, not device timestamps: clocks can report
+  // same-session samples out of order. A fresh but invalid power sample must
+  // not keep old load values eligible for a forecast.
   if (requireLive) {
     if (availability.get(POWER_METER_DEVICE_ID)?.status !== "online") return [];
-    const latest = ordered.at(-1);
-    if (!latest) return [];
-    const receivedAt = Date.parse(latest.received_at);
+    const latestReceived = [...deduplicated.values()].sort((left, right) =>
+      Date.parse(left.received_at) - Date.parse(right.received_at)
+    ).at(-1);
+    if (!latestReceived) return [];
+
+    const receivedAt = Date.parse(latestReceived.received_at);
     const ageMs = Date.now() - receivedAt;
-    if (!Number.isFinite(receivedAt) || ageMs < 0 || ageMs > POWER_METER_MAX_AGE_MS) return [];
+    const activePower = latestReceived.readings?.active_power_w;
+    if (
+      !Number.isFinite(receivedAt) ||
+      ageMs < 0 ||
+      ageMs > POWER_METER_MAX_AGE_MS ||
+      typeof activePower !== "number" ||
+      !Number.isFinite(activePower) ||
+      activePower < 0
+    ) return [];
   }
 
   return ordered;
@@ -313,12 +356,18 @@ function getCurrentPowerMeterReadings(): Telemetry[] {
   return collectPowerMeterReadings(true);
 }
 
+function getLatestPowerMeterReading(): Telemetry | null {
+  return [...getCurrentPowerMeterReadings()].sort((left, right) =>
+    Date.parse(left.received_at) - Date.parse(right.received_at)
+  ).at(-1) || null;
+}
+
 function getPowerMeterSessionHistory(): Telemetry[] {
   return collectPowerMeterReadings(false);
 }
 
 app.get("/api/power-meter/carbon", (c) => {
-  const latest = getCurrentPowerMeterReadings().at(-1) || null;
+  const latest = getLatestPowerMeterReading();
   const rawEnergyKwh = latest?.readings?.energy_kwh;
   const energyKwh = typeof rawEnergyKwh === "number" && Number.isFinite(rawEnergyKwh) && rawEnergyKwh >= 0
     ? rawEnergyKwh
@@ -406,14 +455,18 @@ function clampForecast(candidate: number, history: number[]): number {
   return Math.min(upper, Math.max(lower, Number.isFinite(candidate) ? candidate : recent.at(-1) || 0));
 }
 
-function forecastCandidate(history: number[], method: EnergyForecastMethodId, alpha: number): number {
+function forecastCandidate(history: number[], method: EnergyForecastMethodId, alpha: number): number | null {
   const values = history.filter((value) => Number.isFinite(value) && value >= 0);
-  if (values.length === 0) return 0;
-  const recent = values.slice(-30);
+  if (values.length === 0) return null;
+  // SES can use the configured full window. Other light baselines use a bounded
+  // recent window to avoid overreacting to very old load behavior.
+  const recent = method === "ses" ? values : values.slice(-30);
   let prediction = recent.at(-1) || 0;
 
   if (method === "ses") {
-    prediction = exponentialSmoothing(recent, alpha) ?? prediction;
+    const smoothed = exponentialSmoothing(recent, alpha);
+    if (smoothed === null) return null;
+    prediction = smoothed;
   } else if (method === "moving_average") {
     const window = recent.slice(-12);
     prediction = window.reduce((sum, value) => sum + value, 0) / window.length;
@@ -451,22 +504,24 @@ function forecastCandidate(history: number[], method: EnergyForecastMethodId, al
   return clampForecast(prediction, recent);
 }
 
-type ForecastScore = { mae_w: number; rmse_w: number; samples: number };
+type ForecastScore = { mae_w: number | null; rmse_w: number | null; samples: number };
 
 function evaluateForecast(
   values: number[],
-  predictor: (history: number[]) => number
+  predictor: (history: number[]) => number | null
 ): ForecastScore {
   const validationCount = Math.min(12, Math.max(4, Math.floor(values.length * 0.2)));
-  const firstValidationIndex = Math.max(3, values.length - validationCount);
+  // Every validation prefix must meet the configured sample threshold. If the
+  // session is only just large enough to produce a forecast, report no score.
+  const firstValidationIndex = Math.max(FORECAST_MIN_SAMPLES, values.length - validationCount);
   const errors: number[] = [];
 
   for (let index = firstValidationIndex; index < values.length; index += 1) {
     const prediction = predictor(values.slice(0, index));
-    if (Number.isFinite(prediction)) errors.push(values[index] - prediction);
+    if (prediction !== null && Number.isFinite(prediction)) errors.push(values[index] - prediction);
   }
 
-  if (errors.length === 0) return { mae_w: 0, rmse_w: 0, samples: 0 };
+  if (errors.length === 0) return { mae_w: null, rmse_w: null, samples: 0 };
   const mae = errors.reduce((sum, error) => sum + Math.abs(error), 0) / errors.length;
   const rmse = Math.sqrt(errors.reduce((sum, error) => sum + error ** 2, 0) / errors.length);
   return { mae_w: Number(mae.toFixed(2)), rmse_w: Number(rmse.toFixed(2)), samples: errors.length };
@@ -503,21 +558,45 @@ app.get("/api/power-meter/forecast", (c) => {
     validation: evaluateForecast(samples, (history) => forecastCandidate(history, method.id, ENERGY_FORECAST_ALPHA))
   }));
 
-  // Inverse-MAE weights emphasize models that performed better in walk-forward
-  // validation. The 1 W floor prevents a near-zero measured error dominating.
-  const makeEnsemble = (history: number[]) => {
-    const forecasts = ENERGY_FORECAST_METHODS.map((method) => {
-      const score = evaluateForecast(history, (training) => forecastCandidate(training, method.id, ENERGY_FORECAST_ALPHA));
-      return {
-        forecast: forecastCandidate(history, method.id, ENERGY_FORECAST_ALPHA),
-        weight: 1 / Math.max(score.samples ? score.mae_w : 1, 1)
-      };
+  const unavailableMethod = methodScores.find((method) => method.forecast === null);
+  if (unavailableMethod) {
+    return c.json({
+      available: false,
+      reason: `${unavailableMethod.name} does not yet have enough training samples.`,
+      model: { name: "multi_model_energy_forecast", alpha: ENERGY_FORECAST_ALPHA, samples: samples.length }
     });
+  }
+
+  // Inverse-MAE weights emphasize models that performed better in walk-forward
+  // validation. Models without enough validation prefixes receive a neutral
+  // weight; they are not incorrectly assigned a zero-watt validation error.
+  const makeEnsemble = (history: number[]): number | null => {
+    const forecasts = ENERGY_FORECAST_METHODS.flatMap((method) => {
+      const forecast = forecastCandidate(history, method.id, ENERGY_FORECAST_ALPHA);
+      if (forecast === null) return [];
+      const score = evaluateForecast(history, (training) => forecastCandidate(training, method.id, ENERGY_FORECAST_ALPHA));
+      return [{
+        forecast,
+        weight: score.samples > 0 && score.mae_w !== null
+          ? 1 / Math.max(score.mae_w, 1)
+          : 1
+      }];
+    });
+    if (forecasts.length === 0) return null;
     const totalWeight = forecasts.reduce((sum, item) => sum + item.weight, 0);
     return forecasts.reduce((sum, item) => sum + item.forecast * item.weight, 0) / totalWeight;
   };
 
-  const ensembleForecast = clampForecast(makeEnsemble(samples), samples);
+  const ensembleCandidate = makeEnsemble(samples);
+  if (ensembleCandidate === null) {
+    return c.json({
+      available: false,
+      reason: "The ensemble does not have enough valid model predictions yet.",
+      model: { name: "multi_model_energy_forecast", alpha: ENERGY_FORECAST_ALPHA, samples: samples.length }
+    });
+  }
+
+  const ensembleForecast = clampForecast(ensembleCandidate, samples);
   const ensembleValidation = evaluateForecast(samples, makeEnsemble);
   const sesForecast = methodScores.find((item) => item.id === "ses")?.forecast ?? ensembleForecast;
 
@@ -525,7 +604,7 @@ app.get("/api/power-meter/forecast", (c) => {
     ...methodScores.map((method) => ({
       id: method.id,
       name: method.name,
-      forecast_active_power_w: Number(method.forecast.toFixed(2)),
+      forecast_active_power_w: Number(method.forecast!.toFixed(2)),
       mae_w: method.validation.mae_w,
       rmse_w: method.validation.rmse_w,
       validation_samples: method.validation.samples,
@@ -542,9 +621,9 @@ app.get("/api/power-meter/forecast", (c) => {
     }
   ];
 
-  const bestBaseModel = [...methodScores].sort((left, right) =>
-    left.validation.mae_w - right.validation.mae_w
-  )[0];
+  const bestBaseModel = [...methodScores]
+    .filter((method) => method.validation.samples > 0 && method.validation.mae_w !== null)
+    .sort((left, right) => left.validation.mae_w! - right.validation.mae_w!)[0];
 
   return c.json({
     available: true,
@@ -555,7 +634,7 @@ app.get("/api/power-meter/forecast", (c) => {
       samples: samples.length
     },
     selected_model: "weighted_ensemble",
-    best_backtest_model: bestBaseModel?.name || "weighted ensemble",
+    best_backtest_model: bestBaseModel?.name || "Not enough validation history",
     validation: {
       method: "rolling one-step-ahead holdout",
       samples: ensembleValidation.samples,
