@@ -68,8 +68,8 @@ type EnergyModelResult = {
   id: string;
   name: string;
   forecast_active_power_w: number;
-  mae_w: number;
-  rmse_w: number;
+  mae_w: number | null;
+  rmse_w: number | null;
   validation_samples: number;
   projections: {
     next_24_hours: EnergyProjection;
@@ -224,7 +224,19 @@ export default function App() {
   const emissionFactor = carbonSummary?.data?.emission_factor_kg_co2_per_kwh ?? 0.675;
   const sessionEnergyKwh = carbonSummary?.available ? carbonSummary.data?.energy_kwh ?? null : null;
   const sessionCarbonKg = carbonSummary?.available ? carbonSummary.data?.estimated_co2_kg ?? null : null;
-  const energyModels = energyForecast?.models || [];
+  const energyModels: EnergyModelResult[] = energyForecast?.models?.length
+    ? energyForecast.models
+    : energyForecast?.available && energyForecast.data
+      ? [{
+          id: "ses",
+          name: "Simple exponential smoothing (legacy API)",
+          forecast_active_power_w: energyForecast.data.forecast_active_power_w ?? energyForecast.data.smoothed_active_power_w,
+          mae_w: null,
+          rmse_w: null,
+          validation_samples: 0,
+          projections: energyForecast.data.projections
+        }]
+      : [];
   const energyModelChartData = energyModels.map((model) => ({
     model: model.name,
     forecast: model.forecast_active_power_w,
@@ -393,7 +405,7 @@ export default function App() {
       </section>
       <div className="sourcefoot">POWER SOURCE: MQTT · {powerMeterReading?.device_id || POWER_METER_DEVICE_ID} · {powerMeterReading ? "RECEIVED " + new Date(powerMeterReading.received_at).toLocaleString() : "NO METER READINGS RECEIVED"}</div>
     </section> : tab === "energy-predictions" ? <section className="content">
-      <div className="sectionhead"><div><div className="eyebrow">ENERGY USE OUTLOOK</div><h2>Energy & emissions forecast</h2></div><span className={energyForecast?.available ? "status good" : "status muted"}><i/>{energyForecast?.available ? "MODEL SUITE READY" : "WAITING FOR DATA"}</span></div>
+      <div className="sectionhead"><div><div className="eyebrow">ENERGY USE OUTLOOK</div><h2>Energy & emissions forecast</h2></div><span className={energyForecast?.available ? "status good" : "status muted"}><i/>{energyForecast?.available ? (energyForecast.models?.length ? "MODEL SUITE READY" : "SES COMPATIBILITY") : "WAITING FOR DATA"}</span></div>
       <article className="prediction energy-prediction">
         <div className="predictionicon"><TrendingUp size={26}/></div>
         <div>
@@ -404,7 +416,7 @@ export default function App() {
         </div>
       </article>
       {energyForecast?.available && energyForecast.data ? <>
-        <div className="forecast-assumption"><Clock size={16}/> Ensemble load estimate: <strong>{fmt(energyForecast.data.forecast_active_power_w, 1)} W</strong> · SES baseline {fmt(energyForecast.data.smoothed_active_power_w, 1)} W · {energyForecast.model.samples} samples</div>
+        <div className="forecast-assumption"><Clock size={16}/> Ensemble load estimate: <strong>{fmt(energyForecast.data.forecast_active_power_w ?? energyForecast.data.smoothed_active_power_w, 1)} W</strong> · SES baseline {fmt(energyForecast.data.smoothed_active_power_w, 1)} W · {energyForecast.model.samples} samples</div>
         <div className="metrics energy-forecast-metrics">
           <article className="metric"><div className="metriclabel">NEXT 24 HOURS</div><div className="metricvalue">{fmt(energyForecast.data.projections.next_24_hours.energy_kwh, 2)}<small> kWh</small></div><div className="metricfoot">{fmt(energyForecast.data.projections.next_24_hours.estimated_co2_kg, 3)} kg CO₂ estimated</div></article>
           <article className="metric"><div className="metriclabel">NEXT 7 DAYS</div><div className="metricvalue">{fmt(energyForecast.data.projections.next_7_days.energy_kwh, 2)}<small> kWh</small></div><div className="metricfoot">{fmt(energyForecast.data.projections.next_7_days.estimated_co2_kg, 3)} kg CO₂ estimated</div></article>
@@ -458,7 +470,7 @@ export default function App() {
               <span>RMSE {fmt(model.rmse_w, 2)} W</span>
             </div>)}
           </div>
-          <div className="model-meta">BEST INDIVIDUAL BACKTEST: {energyForecast.best_backtest_model || "Not available"} · SELECTED PROJECTION: INVERSE-ERROR WEIGHTED ENSEMBLE · α {fmt(energyForecast.model.alpha, 2)}</div>
+          <div className="model-meta">{energyForecast.models?.length ? `BEST INDIVIDUAL BACKTEST: ${energyForecast.best_backtest_model || "Not available"} · SELECTED PROJECTION: INVERSE-ERROR WEIGHTED ENSEMBLE` : "LEGACY API RESPONSE · SES ONLY · MODEL COMPARISON NOT AVAILABLE"} · α {fmt(energyForecast.model.alpha, 2)}</div>
         </article>
       </> : <div className="model-wait">{energyForecast?.reason || "Waiting for enough valid MQTT power readings to initialize the energy models."}</div>}
       <p className="carbon-note">The MAE/RMSE chart is a rolling one-step-ahead backtest over the current in-memory session. Long horizons still assume the selected load level remains constant; daily/weekly seasonality needs several days of persisted readings. The forecast history resets when the API restarts.</p>
