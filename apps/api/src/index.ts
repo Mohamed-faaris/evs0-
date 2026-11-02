@@ -436,7 +436,7 @@ function aqiProxyError(message: string, status: number, code: string): ChennaiAq
 async function fetchChennaiAqiSnapshot(): Promise<ChennaiAqiSnapshot> {
   if (!chennaiAqiSourceUrl) {
     throw aqiProxyError(
-      "No confirmed public AQI station endpoint is configured. The Reclaim Chennai site's public sky-camera dataset is proxied separately; set CHENNAI_AQI_STATIONS_URL only after confirming the station API path.",
+      "No confirmed public AQI station endpoint is configured. The Reclaim Chennai station route is fixed to the published /api/stations endpoint.",
       424,
       "chennai_aqi_source_misconfigured"
     );
@@ -766,7 +766,7 @@ app.get("/api/chennai-aqi/stations", async (c) => {
     const code = proxyError.code || "chennai_aqi_upstream_unavailable";
     const message = proxyError.status
       ? proxyError.message
-      : "The public Chennai station feed is unavailable. No sample AQI values are substituted.";
+      : "The Reclaim Chennai /api/stations feed is unavailable. No sample AQI values are substituted.";
     if (!proxyError.status) {
       console.warn("[CHENNAI-AQI] Upstream unavailable:", error instanceof Error ? error.message : "Unknown error");
     }
