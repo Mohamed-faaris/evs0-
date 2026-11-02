@@ -161,3 +161,37 @@
 .chennai-map-controls button:hover{background:#ffd84a}
 .chennai-map-zoom-label{position:absolute;right:12px;bottom:12px;z-index:4;padding:6px 8px;background:#ffffffed;border:1px solid #d9d3c5;color:#586070;font-size:8px;font-weight:800;letter-spacing:.5px;pointer-events:none}
 .chennai-map-tile-error{position:absolute;left:12px;top:12px;z-index:5;padding:7px 9px;max-width:230px;background:#fff0ed;border:1px solid #c43a3a;color:#7d2d2d;font-size:9px;pointer-events:none}
+
+
+/* Reclaim Chennai-inspired motion: pixel scenes and short stop-motion camera replay. */
+.chennai-pixel-scene{isolation:isolate}
+.chennai-pixel-scene canvas{animation:chennai-scene-glow 5s steps(5,end) infinite}
+.chennai-pixel-scene:after{content:"";position:absolute;inset:0;pointer-events:none;background:repeating-linear-gradient(to bottom,transparent 0,transparent 3px,rgba(5,10,22,.12) 4px);opacity:.34}
+.chennai-scene-motion-label{position:absolute;left:14px;bottom:12px;color:#9da9bb;font:700 8px 'Pixelify Sans',monospace;letter-spacing:.8px;text-shadow:1px 1px #08111f}
+.chennai-sky-section{margin:17px 0;padding:16px;background:#111a2a;color:#e9edf4;border:2px solid #1f2229;box-shadow:3px 3px 0 #1f2229}
+.chennai-sky-head{display:flex;justify-content:space-between;align-items:flex-start;gap:16px;margin-bottom:14px}
+.chennai-sky-head h3{margin:5px 0 4px;font-size:18px}
+.chennai-sky-head p{margin:0;color:#9da9bb;font-size:10px;line-height:1.5}
+.chennai-sky-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px}
+.chennai-sky-camera{min-width:0;padding:7px;background:#1a2434;border:1px solid #394353;box-shadow:2px 2px 0 #070d18}
+.chennai-sky-frame{position:relative;overflow:hidden;height:136px;background:#080f1c}
+.chennai-sky-frame img{display:block;width:100%;height:100%;object-fit:cover;image-rendering:pixelated;animation:chennai-frame-in .28s steps(4,end)}
+.chennai-sky-image-missing{display:grid;place-items:center;height:100%;color:#8996aa;font:700 9px 'Pixelify Sans',monospace}
+.chennai-sky-rec{position:absolute;left:7px;top:7px;display:inline-flex;align-items:center;gap:5px;padding:4px 6px;background:#09111de8;color:#eee;font:700 8px 'Pixelify Sans',monospace;letter-spacing:.6px}
+.chennai-sky-rec i{width:6px;height:6px;border-radius:50%;background:#ef615c;animation:chennai-rec-blink 1.1s steps(1,end) infinite}
+.chennai-sky-camera-id{position:absolute;right:6px;bottom:6px;padding:4px 5px;background:#09111de8;color:#cbd4e3;font:700 8px Inter,sans-serif;letter-spacing:.6px}
+.chennai-sky-camera-meta{display:flex;justify-content:space-between;align-items:center;gap:7px;padding:9px 2px 3px}
+.chennai-sky-camera-meta strong{color:#f4d56f;font:700 11px 'Pixelify Sans',monospace;text-transform:uppercase}
+.chennai-sky-camera-meta span{font-size:10px;font-weight:700;color:#eef2f8}
+.chennai-sky-camera>small{display:block;padding:0 2px 3px;color:#97a2b4;font-size:8px}
+.chennai-sky-empty{padding:20px;background:#1a2434;border:1px dashed #566276;color:#aab5c6;font-size:10px}
+.chennai-sky-foot{display:flex;justify-content:space-between;gap:10px;margin-top:11px;color:#a2aec0;font-size:8px;font-weight:700;letter-spacing:.4px}
+.chennai-sky-disclaimer{display:block;margin-top:8px;color:#7f8ca1;font-size:8px;line-height:1.5}
+@keyframes chennai-rec-blink{0%,45%{opacity:1}46%,100%{opacity:.24}}
+@keyframes chennai-frame-in{0%{opacity:.65;transform:translateY(2px)}100%{opacity:1;transform:translateY(0)}}
+@keyframes chennai-scene-glow{0%,100%{filter:brightness(1)}50%{filter:brightness(1.04)}}
+@media(max-width:900px){.chennai-sky-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:520px){.chennai-sky-head{flex-direction:column}.chennai-sky-grid{grid-template-columns:1fr 1fr}.chennai-sky-frame{height:105px}.chennai-sky-foot{flex-direction:column}}
+@media(prefers-reduced-motion:reduce){
+  .chennai-pixel-scene canvas,.chennai-sky-rec i,.chennai-sky-frame img{animation:none!important}
+}
