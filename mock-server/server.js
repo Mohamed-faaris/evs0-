@@ -37,20 +37,42 @@ let lastPowerSampleAt = startedAt;
 const powerMeterStartedAt = Date.now();
 const uptimeSeconds = () => Math.floor((Date.now() - startedAt) / 1000);
 
-function readSensor() {
+let latestSensorReading = {
+  valid: true,
+  raw_adc: 1750,
+  adc_voltage_v: Number((1750 / 4095 * 3.3).toFixed(3)),
+  estimated_sensor_ao_voltage_v: Number((1750 / 4095 * 3.3 * 1.5).toFixed(3)),
+};
+
+// Advance the mock sensor once per MQTT telemetry sample, not on HTTP reads.
+// This keeps the graph independent of dashboard polling frequency.
+function sampleSensor() {
   sensorSequence += 1;
-  const rawADC = 1750 + Math.round(Math.sin(sensorSequence / 5) * 110);
+
+  // Model a slowly drifting baseline with bounded, low-amplitude sensor noise.
+  // Avoid a fast sine wave: it looks like a fault in the live chart.
+  const baseline = 1750 + 35 * Math.sin(sensorSequence / 60);
+  const previous = latestSensorReading.raw_adc;
+  const meanReverted = previous + (baseline - previous) * 0.18;
+  const noise = (Math.random() - 0.5) * 28;
+  const rawADC = Math.max(100, Math.min(4000, Math.round(meanReverted + noise)));
   const adcVoltage = Number((rawADC / 4095 * 3.3).toFixed(3));
-  return {
+
+  latestSensorReading = {
     valid: true,
     raw_adc: rawADC,
     adc_voltage_v: adcVoltage,
     estimated_sensor_ao_voltage_v: Number((adcVoltage * 1.5).toFixed(3)),
   };
+  return latestSensorReading;
+}
+
+function readSensor() {
+  return latestSensorReading;
 }
 
 function buildTelemetry() {
-  const sensor = readSensor();
+  const sensor = sampleSensor();
   return {
     schema_version: 1,
     device_id: DEVICE_ID,
