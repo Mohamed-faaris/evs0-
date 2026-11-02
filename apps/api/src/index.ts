@@ -875,7 +875,43 @@ async function fetchChennaiSkySnapshot(): Promise<{ payload: unknown; fetchedAt:
     throw new Error("Reclaim Chennai sky API payload does not contain a cameras array.");
   }
 
-  return { payload, fetchedAt: new Date().toISOString() };
+  const source = payload as Record<string, unknown>;
+  const cameras = source.cameras.flatMap((entry): Record<string, unknown>[] => {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) return [];
+    const camera = entry as Record<string, unknown>;
+    const cameraId = typeof camera.camera_id === "string" ? camera.camera_id.trim() : "";
+    const capturedAt = typeof camera.captured_at === "string" ? camera.captured_at : "";
+    const image = typeof camera.image === "string" && /^\/sky\/\d{1,10}\.jpg$/.test(camera.image)
+      ? camera.image
+      : "";
+    if (!cameraId || !Number.isFinite(Date.parse(capturedAt)) || !image) return [];
+
+    const finiteNumber = (value: unknown): number | null =>
+      typeof value === "number" && Number.isFinite(value) ? value : null;
+    const textOrNull = (value: unknown): string | null =>
+      typeof value === "string" ? value : null;
+
+    return [{
+      id: finiteNumber(camera.id) ?? 0,
+      camera_id: cameraId,
+      captured_at: capturedAt,
+      image,
+      name: textOrNull(camera.name),
+      verdict: textOrNull(camera.verdict),
+      rain_truth: textOrNull(camera.rain_truth),
+      confidence: finiteNumber(camera.confidence),
+      bearing: finiteNumber(camera.bearing)
+    }];
+  });
+
+  return {
+    payload: {
+      ...source,
+      cameras,
+      end: typeof source.end === "string" && Number.isFinite(Date.parse(source.end)) ? source.end : null
+    },
+    fetchedAt: new Date().toISOString()
+  };
 }
 
 type SkyImageProxyError = Error & { status?: number; upstreamStatus?: number };
@@ -1105,6 +1141,49 @@ const CHENNAI_TREND_METRICS = new Set([
 ]);
 const chennaiTrendCache = new Map<string, { expiresAt: number; payload: unknown; fetchedAt: string }>();
 const chennaiTrendInflight = new Map<string, Promise<{ payload: unknown; fetchedAt: string }>>();
+const CHENNAI_TREND_CACHE_MAX_ENTRIES = 256;
+const CHENNAI_TREND_MAX_BYTES = 5 * 1024 * 1024;
+const CHENNAI_TREND_MAX_CONCURRENT_UPSTREAM = 6;
+let chennaiTrendActiveUpstream = 0;
+
+async function readChennaiTrendJson(response: Response): Promise<unknown> {
+  const declaredLength = Number(response.headers.get("content-length"));
+  if (Number.isFinite(declaredLength) && declaredLength > CHENNAI_TREND_MAX_BYTES) {
+    await response.body?.cancel().catch(() => {});
+    throw new Error("Reclaim Chennai trend API exceeded the 5 MiB response limit.");
+  }
+  if (!response.body) throw new Error("Reclaim Chennai trend API returned an empty body.");
+
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let totalBytes = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      totalBytes += value.byteLength;
+      if (totalBytes > CHENNAI_TREND_MAX_BYTES) {
+        await reader.cancel().catch(() => {});
+        throw new Error("Reclaim Chennai trend API exceeded the 5 MiB response limit.");
+      }
+      chunks.push(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+
+  const bytes = new Uint8Array(totalBytes);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  try {
+    return JSON.parse(new TextDecoder().decode(bytes));
+  } catch {
+    throw new Error("Reclaim Chennai trend API returned malformed JSON.");
+  }
+}
 
 app.get("/api/chennai-aqi/trend", async (c) => {
   const metric = c.req.query("metric") || "aqi_in";
@@ -1121,6 +1200,9 @@ app.get("/api/chennai-aqi/trend", async (c) => {
   }
 
   const cacheKey = metric + ":" + hours + ":" + uid;
+  for (const [key, entry] of chennaiTrendCache) {
+    if (entry.expiresAt <= Date.now()) chennaiTrendCache.delete(key);
+  }
   const cached = chennaiTrendCache.get(cacheKey);
   if (cached && cached.expiresAt > Date.now()) {
     c.header("X-AQI-Cache", "HIT");
@@ -1130,6 +1212,13 @@ app.get("/api/chennai-aqi/trend", async (c) => {
 
   let request = chennaiTrendInflight.get(cacheKey);
   if (!request) {
+    if (chennaiTrendActiveUpstream >= CHENNAI_TREND_MAX_CONCURRENT_UPSTREAM) {
+      return c.json({
+        error: "chennai_aqi_trend_busy",
+        message: "The trend proxy is busy. Retry shortly."
+      }, 429);
+    }
+    chennaiTrendActiveUpstream += 1;
     request = (async () => {
       const url = new URL("https://pol.reclaimchennai.city/api/trend");
       url.searchParams.set("metric", metric);
@@ -1154,12 +1243,26 @@ app.get("/api/chennai-aqi/trend", async (c) => {
         await upstream.body?.cancel().catch(() => {});
         throw new Error("Reclaim Chennai trend API returned non-JSON content.");
       }
-      const payload: unknown = await upstream.json();
+      const payload: unknown = await readChennaiTrendJson(upstream);
       if (!payload || typeof payload !== "object" || !Array.isArray((payload as { points?: unknown }).points)) {
         throw new Error("Reclaim Chennai trend API returned an invalid points payload.");
       }
-      return { payload, fetchedAt: new Date().toISOString() };
-    })();
+      const source = payload as Record<string, unknown>;
+      const points = (source.points as unknown[]).filter((point) =>
+        point !== null &&
+        typeof point === "object" &&
+        typeof (point as { t?: unknown }).t === "string" &&
+        Number.isFinite(Date.parse((point as { t: string }).t)) &&
+        ((point as { med?: unknown }).med === null ||
+          (typeof (point as { med?: unknown }).med === "number" && Number.isFinite((point as { med: number }).med)))
+      );
+      return {
+        payload: { ...source, points },
+        fetchedAt: new Date().toISOString()
+      };
+    })().finally(() => {
+      chennaiTrendActiveUpstream = Math.max(0, chennaiTrendActiveUpstream - 1);
+    });
     chennaiTrendInflight.set(cacheKey, request);
   }
 
@@ -1171,6 +1274,11 @@ app.get("/api/chennai-aqi/trend", async (c) => {
         fetchedAt: snapshot.fetchedAt,
         expiresAt: Date.now() + 60_000
       });
+      while (chennaiTrendCache.size > CHENNAI_TREND_CACHE_MAX_ENTRIES) {
+        const oldest = chennaiTrendCache.keys().next().value;
+        if (oldest === undefined) break;
+        chennaiTrendCache.delete(oldest);
+      }
     }
     c.header("X-AQI-Cache", "MISS");
     c.header("X-AQI-Updated-At", snapshot.fetchedAt);
